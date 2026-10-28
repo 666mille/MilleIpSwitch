@@ -1,0 +1,84 @@
+#pragma code_page(65001)
+#include <windows.h>
+#include <commctrl.h>
+#include "resource.h"
+
+IDI_APP ICON "milleipswitch.ico"
+IDI_DETAIL ICON "milleipswitch_detail.ico"
+CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "milleipswitch.manifest"
+
+IDD_EDITOR DIALOGEX 0, 0, 384, 308
+STYLE DS_SETFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX
+EXSTYLE WS_EX_APPWINDOW
+CAPTION "MilleIpSwitch – Profile"
+FONT 9, "Segoe UI", 400, 0, 1
+BEGIN
+    LTEXT           "Profile:", IDC_LBL_PROFILES, 7, 7, 100, 8
+    LISTBOX         IDC_LIST, 7, 17, 118, 196, LBS_NOTIFY | LBS_NOINTEGRALHEIGHT | LBS_OWNERDRAWFIXED | LBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP | WS_BORDER
+    PUSHBUTTON      "Neu", IDC_NEW, 7, 217, 38, 14
+    PUSHBUTTON      "Kopieren", IDC_DUP, 47, 217, 38, 14
+    PUSHBUTTON      "Löschen", IDC_DEL, 87, 217, 38, 14
+    PUSHBUTTON      "Nach oben", IDC_UP, 7, 234, 58, 14
+    PUSHBUTTON      "Nach unten", IDC_DOWN, 67, 234, 58, 14
+
+    LTEXT           "Profilname:", IDC_LBL_NAME, 135, 9, 58, 8
+    EDITTEXT        IDC_NAME, 195, 7, 182, 12, ES_AUTOHSCROLL
+    LTEXT           "Adapter:", IDC_LBL_ADAPTER, 135, 25, 58, 8
+    COMBOBOX        IDC_ADAPTER, 195, 23, 182, 150, CBS_DROPDOWN | CBS_AUTOHSCROLL | WS_VSCROLL | WS_TABSTOP
+    PUSHBUTTON      "Aktuelle Einstellungen des Adapters übernehmen", IDC_READCUR, 195, 39, 182, 14
+
+    GROUPBOX        "IP-Adresse", IDC_GRP_IP, 135, 58, 242, 128
+    AUTORADIOBUTTON "IP-Adresse automatisch beziehen (DHCP)", IDC_DHCP, 143, 70, 225, 10, WS_GROUP | WS_TABSTOP
+    AUTORADIOBUTTON "Folgende IP-Adresse verwenden:", IDC_STATICIP, 143, 82, 225, 10
+    LTEXT           "IP-Adresse:", IDC_LBL_IP, 153, 97, 90, 8, WS_GROUP
+    CONTROL         "", IDC_IP, "SysIPAddress32", WS_TABSTOP, 250, 95, 118, 13
+    LTEXT           "Subnetzmaske:", IDC_LBL_MASK, 153, 113, 90, 8
+    CONTROL         "", IDC_MASK, "SysIPAddress32", WS_TABSTOP, 250, 111, 118, 13
+    LTEXT           "Standardgateway:", IDC_LBL_GW, 153, 129, 90, 8
+    CONTROL         "", IDC_GW, "SysIPAddress32", WS_TABSTOP, 250, 127, 118, 13
+    LTEXT           "Weitere IP-Adressen (eine pro Zeile, z. B. 10.0.0.5/8):", IDC_LBL_EXTRA, 153, 144, 215, 8
+    EDITTEXT        IDC_EXTRA, 153, 154, 215, 27, ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL
+
+    GROUPBOX        "DNS-Server", IDC_GRP_DNS, 135, 190, 242, 72
+    AUTORADIOBUTTON "DNS-Serveradresse automatisch beziehen", IDC_DNSAUTO, 143, 202, 225, 10, WS_GROUP | WS_TABSTOP
+    AUTORADIOBUTTON "Folgende DNS-Serveradressen verwenden:", IDC_DNSMAN, 143, 214, 225, 10
+    LTEXT           "Bevorzugter DNS-Server:", IDC_LBL_DNS1, 153, 229, 95, 8, WS_GROUP
+    CONTROL         "", IDC_DNS1, "SysIPAddress32", WS_TABSTOP, 250, 227, 118, 13
+    LTEXT           "Alternativer DNS-Server:", IDC_LBL_DNS2, 153, 245, 95, 8
+    CONTROL         "", IDC_DNS2, "SysIPAddress32", WS_TABSTOP, 250, 243, 118, 13
+
+    CONTROL         "", IDC_FEEDBACK, "Static", SS_OWNERDRAW, 7, 268, 370, 14
+    PUSHBUTTON      "Aktivieren", IDC_ACTIVATE, 7, 287, 58, 14
+    PUSHBUTTON      "Netzwerkstatus", IDC_STATUSBTN, 67, 287, 58, 14
+    CONTROL         "", IDC_LANG, "Button", BS_OWNERDRAW | WS_TABSTOP, 135, 287, 64, 14
+    DEFPUSHBUTTON   "OK", IDOK, 215, 287, 52, 14
+    PUSHBUTTON      "Schließen", IDCANCEL, 270, 287, 52, 14
+    PUSHBUTTON      "Speichern", IDC_APPLY, 325, 287, 52, 14
+END
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION 1,0,0,0
+ PRODUCTVERSION 1,0,0,0
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_APP
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040704B0"
+        BEGIN
+            VALUE "CompanyName", "666mille"
+            VALUE "LegalCopyright", "Copyright (c) 2026 Holger (666mille), MIT License"
+            VALUE "InternalName", "milleipswitch"
+            VALUE "Comments", "https://github.com/666mille/MilleIpSwitch"
+            VALUE "FileDescription", "MilleIpSwitch – network profile switcher"
+            VALUE "FileVersion", "1.0.0"
+            VALUE "ProductName", "MilleIpSwitch"
+            VALUE "ProductVersion", "1.0.0"
+            VALUE "OriginalFilename", "milleipswitch.exe"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0407, 1200
+    END
+END

@@ -1,0 +1,19 @@
+# Build output
+build/
+out/
+*.exe
+*.obj
+*.o
+*.res
+*.pdb
+*.ilk
+
+# Local profile data (written next to the exe)
+profiles.ini
+profiles.ini.bak
+profiles.ini.tmp
+
+# Editors
+.vs/
+.vscode/
+*.user
