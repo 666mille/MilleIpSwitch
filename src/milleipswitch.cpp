@@ -42,7 +42,7 @@ using std::wstring;
 static HINSTANCE g_hInst;
 static wstring g_exePath, g_iniPath;
 
-#define NS_VERSION L"1.0.0"
+#define NS_VERSION L"1.0.1"
 static int g_lang = 0;
 enum { LANG_COUNT = 4 };
 static const wchar_t* trLookup(const wchar_t* en);

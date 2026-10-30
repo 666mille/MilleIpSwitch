@@ -57,8 +57,8 @@ BEGIN
 END
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 1,0,0,0
- PRODUCTVERSION 1,0,0,0
+ FILEVERSION 1,0,1,0
+ PRODUCTVERSION 1,0,1,0
  FILEOS VOS_NT_WINDOWS32
  FILETYPE VFT_APP
 BEGIN
@@ -71,9 +71,9 @@ BEGIN
             VALUE "InternalName", "milleipswitch"
             VALUE "Comments", "https://github.com/666mille/MilleIpSwitch"
             VALUE "FileDescription", "MilleIpSwitch – network profile switcher"
-            VALUE "FileVersion", "1.0.0"
+            VALUE "FileVersion", "1.0.1"
             VALUE "ProductName", "MilleIpSwitch"
-            VALUE "ProductVersion", "1.0.0"
+            VALUE "ProductVersion", "1.0.1"
             VALUE "OriginalFilename", "milleipswitch.exe"
         END
     END
