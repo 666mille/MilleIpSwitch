@@ -1381,7 +1381,9 @@ static bool g_autostart = false;
 static void setLanguage(int lang);
 static void langPopup(HWND anchor);
 
-static void trayAdd() {
+#define TIMER_TRAYCHECK 9
+
+static bool trayAdd() {
     g_nid = NOTIFYICONDATAW{};
     g_nid.cbSize = sizeof(g_nid);
     g_nid.hWnd = g_hwnd;
@@ -1390,9 +1392,17 @@ static void trayAdd() {
     g_nid.uCallbackMessage = WM_TRAY;
     g_nid.hIcon = g_icon;
     lstrcpynW(g_nid.szTip, L"MilleIpSwitch", ARRAYSIZE(g_nid.szTip));
-    Shell_NotifyIconW(NIM_ADD, &g_nid);
+    Shell_NotifyIconW(NIM_DELETE, &g_nid);
+    if (!Shell_NotifyIconW(NIM_ADD, &g_nid)) return false;
     g_nid.uVersion = NOTIFYICON_VERSION_4;
     Shell_NotifyIconW(NIM_SETVERSION, &g_nid);
+    return true;
+}
+
+static void trayEnsure() {
+    NOTIFYICONDATAW probe = g_nid;
+    probe.uFlags = NIF_TIP;
+    if (!Shell_NotifyIconW(NIM_MODIFY, &probe)) trayAdd();
 }
 
 static void trayBalloon(const wstring& title, const wstring& text, bool err) {
@@ -3420,6 +3430,9 @@ static LRESULT CALLBACK wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_OPENEDITOR:
         openEditor();
         return 0;
+    case WM_TIMER:
+        if (wp == TIMER_TRAYCHECK) trayEnsure();
+        return 0;
     case WM_FIRSTRUN:
         firstRunHint();
         return 0;
@@ -3485,6 +3498,7 @@ static int runTray(bool showWindow) {
     ChangeWindowMessageFilterEx(g_hwnd, WM_COPYDATA, MSGFLT_ALLOW, nullptr);
     ChangeWindowMessageFilterEx(g_hwnd, WM_OPENEDITOR, MSGFLT_ALLOW, nullptr);
     g_taskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
+    ChangeWindowMessageFilterEx(g_hwnd, g_taskbarCreated, MSGFLT_ALLOW, nullptr);
 
     g_icon = (HICON)LoadImageW(g_hInst, MAKEINTRESOURCEW(IDI_APP), IMAGE_ICON, GetSystemMetrics(SM_CXSMICON),
                                GetSystemMetrics(SM_CYSMICON), 0);
@@ -3501,6 +3515,7 @@ static int runTray(bool showWindow) {
 
     reloadProfiles(true);
     trayAdd();
+    SetTimer(g_hwnd, TIMER_TRAYCHECK, 3000, nullptr);
     g_autostart = taskExists();
     bool firstRun = !regFlag(L"FirstRunDone");
     if (showWindow || firstRun || g_profiles.empty()) openEditor();
