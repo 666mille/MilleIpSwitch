@@ -1,4 +1,4 @@
-// MilleIpSwitch – fast network profile switcher for Windows (IPv4)
+// MilleIpSwitch – fast network profile switcher for Windows
 // SPDX-License-Identifier: MIT
 
 #define NOMINMAX
@@ -21,6 +21,13 @@
 #include <windowsx.h>
 #include <shlobj.h>
 #include <shlwapi.h>
+#include <knownfolders.h>
+#include <icmpapi.h>
+#include <cwctype>
+#include <cstring>
+#include <map>
+#include <commdlg.h>
+#include <winhttp.h>
 #include <taskschd.h>
 #include <setupapi.h>
 #include <devguid.h>
@@ -42,7 +49,7 @@ using std::wstring;
 static HINSTANCE g_hInst;
 static wstring g_exePath, g_iniPath;
 
-#define NS_VERSION L"1.0.1"
+#define NS_VERSION L"1.1.0"
 static int g_lang = 0;
 enum { LANG_COUNT = 4 };
 static const wchar_t* trLookup(const wchar_t* en);
@@ -54,6 +61,68 @@ static inline const wchar_t* TR(const wchar_t* de, const wchar_t* en) {
 // Spanish / French strings, keyed by the English text
 struct TrEntry { const wchar_t *en, *es, *fr; };
 static const TrEntry kTr[] = {
+    {L"paused %d min", L"en pausa %d min", L"en pause %d min"},
+    {L"A device answers ARP (also works from a different subnet on the same switch):", L"Un dispositivo responde a ARP (también desde otra subred en el mismo switch):", L"Un appareil répond à ARP (fonctionne aussi depuis un autre sous-réseau sur le même switch) :"},
+    {L"Test", L"Probar", L"Tester"},
+    {L"Device answers: MAC %ls", L"El dispositivo responde: MAC %ls", L"L’appareil répond : MAC %ls"},
+    {L"No answer – is the device on the same switch and powered on?", L"Sin respuesta: ¿está el dispositivo en el mismo switch y encendido?", L"Aucune réponse – l’appareil est-il sur le même switch et allumé ?"},
+    {L"Please enter a valid IPv4 address.", L"Introduce una dirección IPv4 válida.", L"Veuillez saisir une adresse IPv4 valide."},
+    {L"Please enter at least one IPv6 address.", L"Introduce al menos una dirección IPv6.", L"Veuillez saisir au moins une adresse IPv6."},
+    {L"Invalid IPv6 gateway.", L"Puerta de enlace IPv6 no válida.", L"Passerelle IPv6 invalide."},
+    {L"Invalid IPv6 DNS server.", L"Servidor DNS IPv6 no válido.", L"Serveur DNS IPv6 invalide."},
+    {L"Please enter a valid MAC address (e.g. AA-BB-CC-DD-EE-FF).", L"Introduce una dirección MAC válida (p. ej. AA-BB-CC-DD-EE-FF).", L"Veuillez saisir une adresse MAC valide (p. ex. AA-BB-CC-DD-EE-FF)."},
+    {L"Please enter a host to ping.", L"Introduce un host para el ping.", L"Veuillez indiquer un hôte à tester par ping."},
+    {L"Gateway MAC captured: %ls", L"MAC de la puerta de enlace capturada: %ls", L"MAC de la passerelle récupérée : %ls"},
+    {L"No MAC found – is the adapter connected and the gateway reachable?", L"No se encontró ninguna MAC: ¿está conectado el adaptador y es accesible la puerta de enlace?", L"Aucune MAC trouvée – la carte est-elle connectée et la passerelle joignable ?"},
+    {L"IPv6 …", L"IPv6…", L"IPv6…"},
+    {L"IPv6: automatic", L"IPv6: automática", L"IPv6 : automatique"},
+    {L"IPv6: static", L"IPv6: estática", L"IPv6 : statique"},
+    {L"AutoSwitch …", L"AutoSwitch…", L"AutoSwitch…"},
+    {L"AutoSwitch: on", L"AutoSwitch: activo", L"AutoSwitch : actif"},
+    {L"IPv6 settings", L"Configuración IPv6", L"Paramètres IPv6"},
+    {L"Invalid IPv6 address: ", L"Dirección IPv6 no válida: ", L"Adresse IPv6 invalide : "},
+    {L"Invalid IPv6 prefix length: ", L"Longitud de prefijo IPv6 no válida: ", L"Longueur de préfixe IPv6 invalide : "},
+    {L"Line %d: invalid IPv6 gateway: ", L"Línea %d: puerta de enlace IPv6 no válida: ", L"Ligne %d : passerelle IPv6 invalide : "},
+    {L"Line %d: invalid IPv6 DNS server: ", L"Línea %d: servidor DNS IPv6 no válido: ", L"Ligne %d : serveur DNS IPv6 invalide : "},
+    {L"]: static IPv6, but no 'ip6' given", L"]: IPv6 estática, pero sin 'ip6'", L"] : IPv6 statique, mais aucune 'ip6' indiquée"},
+    {L"IPv6 gateway", L"Gateway IPv6", L"Passerelle IPv6"},
+    {L"AutoSwitch: profile switched", L"AutoSwitch: perfil cambiado", L"AutoSwitch : profil changé"},
+    {L"%d profiles", L"%d perfiles", L"%d profils"},
+    {L"Leave IPv6 unchanged", L"No cambiar IPv6", L"Ne pas modifier IPv6"},
+    {L"Obtain IPv6 automatically (router advertisement / DHCPv6)", L"Obtener IPv6 automáticamente (anuncio de router / DHCPv6)", L"Obtenir IPv6 automatiquement (annonce de routeur / DHCPv6)"},
+    {L"Use the following IPv6 addresses:", L"Usar las siguientes direcciones IPv6:", L"Utiliser les adresses IPv6 suivantes :"},
+    {L"Addresses (one per line, e.g. 2001:db8::10/64):", L"Direcciones (una por línea, p. ej. 2001:db8::10/64):", L"Adresses (une par ligne, p. ex. 2001:db8::10/64) :"},
+    {L"Leave DNS empty for automatic.", L"DNS vacío = automático.", L"DNS vide = automatique."},
+    {L"OK", L"Aceptar", L"OK"},
+    {L"Cancel", L"Cancelar", L"Annuler"},
+    {L"Activate this profile automatically", L"Activar este perfil automáticamente", L"Activer ce profil automatiquement"},
+    {L"The profile is activated as soon as the adapter is connected and all checked conditions are met. If several profiles of the same adapter match, the topmost in the list wins. After a manual switch, AutoSwitch pauses for that adapter for 10 minutes. Gateway MAC and ping apply to the currently connected network; the ARP check also finds devices in a different subnet on the same switch.", L"El perfil se activa en cuanto el adaptador está conectado y se cumplen todas las condiciones marcadas. Si coinciden varios perfiles del mismo adaptador, gana el primero de la lista. Tras un cambio manual, AutoSwitch se detiene 10 minutos para ese adaptador. La MAC de la puerta de enlace y el ping se refieren a la red conectada; la prueba ARP también encuentra dispositivos de otra subred en el mismo switch.", L"Le profil est activé dès que la carte est connectée et que toutes les conditions cochées sont remplies. Si plusieurs profils d’une même carte correspondent, le premier de la liste l’emporte. Après un changement manuel, AutoSwitch se met en pause 10 minutes pour cette carte. La MAC de la passerelle et le ping concernent le réseau connecté ; le test ARP trouve aussi les appareils d’un autre sous-réseau sur le même switch."},
+    {L"Conditions (in addition to “adapter connected”)", L"Condiciones (además de «adaptador conectado»)", L"Conditions (en plus de « carte connectée »)"},
+    {L"The gateway has the MAC address:", L"La puerta de enlace tiene la dirección MAC:", L"La passerelle a l’adresse MAC :"},
+    {L"Use current", L"Usar la actual", L"Utiliser l’actuelle"},
+    {L"This host answers ping:", L"Este host responde al ping:", L"Cet hôte répond au ping :"},
+    {L"Import …", L"Importar…", L"Importer…"},
+    {L"Export …", L"Exportar…", L"Exporter…"},
+    {L"Profile files (*.ini)", L"Archivos de perfiles (*.ini)", L"Fichiers de profils (*.ini)"},
+    {L"All files (*.*)", L"Todos los archivos (*.*)", L"Tous les fichiers (*.*)"},
+    {L"%u profiles exported.", L"%u perfiles exportados.", L"%u profils exportés."},
+    {L"No profiles found in this file.", L"No se encontraron perfiles en este archivo.", L"Aucun profil trouvé dans ce fichier."},
+    {L"%u profiles imported – click “Save” to keep them.", L"%u perfiles importados: pulsa «Guardar» para conservarlos.", L"%u profils importés – cliquez sur « Enregistrer » pour les conserver."},
+    {L"Updates", L"Actualizaciones", L"Mises à jour"},
+    {L"Check for updates now", L"Buscar actualizaciones ahora", L"Rechercher maintenant"},
+    {L"Check automatically", L"Buscar automáticamente", L"Rechercher automatiquement"},
+    {L"Download %ls …", L"Descargar %ls…", L"Télécharger %ls…"},
+    {L"Update available", L"Actualización disponible", L"Mise à jour disponible"},
+    {L"Version %ls is available – click to open the download page.", L"La versión %ls está disponible: haz clic para abrir la página de descarga.", L"La version %ls est disponible – cliquez pour ouvrir la page de téléchargement."},
+    {L"You have the latest version (%ls).", L"Tienes la versión más reciente (%ls).", L"Vous avez la dernière version (%ls)."},
+    {L"No published release found yet.", L"Aún no hay ninguna versión publicada.", L"Aucune version publiée pour l’instant."},
+    {L"Update check failed – could not reach GitHub.", L"Error al buscar actualizaciones: no se pudo conectar con GitHub.", L"Échec de la recherche de mises à jour – GitHub injoignable."},
+    {L"Sort by metric", L"Ordenar por métrica", L"Trier par métrique"},
+    {L"Sorted by metric", L"Ordenado por métrica", L"Trié par métrique"},
+    {L"Interface metric", L"Métrica de interfaz", L"Métrique d’interface"},
+    {L"Metric", L"Métrica", L"Métrique"},
+    {L"automatic", L"automática", L"automatique"},
+    {L"manual", L"manual", L"manuelle"},
     {L"Flush DNS cache", L"Vaciar caché DNS", L"Vider le cache DNS"},
     {L"The Windows DNS cache will be flushed.\nCached name resolutions are discarded and will be looked up again on next access.\n\nContinue?",
      L"Se vaciará la caché DNS de Windows.\nLas resoluciones de nombres guardadas se descartan y se volverán a consultar en el próximo acceso.\n\n¿Continuar?",
@@ -312,6 +381,56 @@ struct Ip4 {
     UINT8 prefix = 0;
 };
 
+struct Ip6 {
+    IN6_ADDR addr{};
+    UINT8 prefix = 64;
+    bool manual = false, linkLocal = false, temp = false;
+};
+
+static wstring ip6Str(const IN6_ADDR& a) {
+    wchar_t b[64] = {};
+    InetNtopW(AF_INET6, (void*)&a, b, 64);
+    return b;
+}
+
+static bool parseIp6(const wstring& s, IN6_ADDR& a) { return InetPtonW(AF_INET6, s.c_str(), &a) == 1; }
+
+static bool sameAddr6(const IN6_ADDR& a, const IN6_ADDR& b) { return memcmp(&a, &b, sizeof(a)) == 0; }
+
+static wstring cidr6Str(const Ip6& w) { return ip6Str(w.addr) + fmt(L"/%u", (unsigned)w.prefix); }
+
+static wstring normMac(const wstring& s) {
+    wstring h;
+    for (wchar_t c : s)
+        if (iswxdigit(c)) h += (wchar_t)towupper(c);
+    if (h.size() != 12) return L"";
+    wstring r;
+    for (size_t i = 0; i < 12; i += 2) {
+        if (i) r += L'-';
+        r += h.substr(i, 2);
+    }
+    return r;
+}
+
+static bool parseCidr6(const wstring& s, Ip6& r, wstring& err) {
+    size_t p = s.find(L'/');
+    wstring a = trim(p == wstring::npos ? s : s.substr(0, p));
+    if (!parseIp6(a, r.addr)) {
+        err = TR(L"Ungültige IPv6-Adresse: ", L"Invalid IPv6 address: ") + s;
+        return false;
+    }
+    r.prefix = 64;
+    if (p != wstring::npos) {
+        int n = _wtoi(trim(s.substr(p + 1)).c_str());
+        if (n < 1 || n > 128) {
+            err = TR(L"Ungültige IPv6-Präfixlänge: ", L"Invalid IPv6 prefix length: ") + s;
+            return false;
+        }
+        r.prefix = (UINT8)n;
+    }
+    return true;
+}
+
 struct Profile {
     wstring name, adapter;
     bool dhcp = false;
@@ -319,6 +438,13 @@ struct Profile {
     bool hasGw = false;
     IN_ADDR gw{};
     vector<IN_ADDR> dns;
+    int ip6mode = 0;
+    vector<Ip6> ips6;
+    bool hasGw6 = false;
+    IN6_ADDR gw6{};
+    vector<IN6_ADDR> dns6;
+    bool autoOn = false;
+    wstring autoMac, autoPing, autoArpIp, autoArpMac;
 };
 
 static bool parseCidr(const wstring& s, Ip4& r, wstring& err) {
@@ -376,13 +502,13 @@ static wstring decodeText(const string& data) {
     return t;
 }
 
-static bool loadProfiles(vector<Profile>& ps, wstring& err) {
+static bool loadProfilesFrom(const wstring& path, vector<Profile>& ps, wstring& err) {
     ps.clear();
-    HANDLE f = CreateFileW(g_iniPath.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+    HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
                            OPEN_EXISTING, 0, nullptr);
     if (f == INVALID_HANDLE_VALUE) {
         if (GetLastError() == ERROR_FILE_NOT_FOUND) return true;
-        err = TR(L"Kann Profildatei nicht öffnen: ", L"Cannot open profile file: ") + g_iniPath;
+        err = TR(L"Kann Profildatei nicht öffnen: ", L"Cannot open profile file: ") + path;
         return false;
     }
     LARGE_INTEGER sz{};
@@ -419,7 +545,7 @@ static bool loadProfiles(vector<Profile>& ps, wstring& err) {
         size_t eq = line.find(L'=');
         if (eq == wstring::npos || cur < 0) {
             err = fmt(TR(L"Zeile %d: Erwartet 'schlüssel = wert' innerhalb eines [Profils]", L"Line %d: expected 'key = value' inside a [profile]"), lineNo) +
-                  TR(L"\n\nInhalt der Zeile: „", L"\n\nLine content: “") + line.substr(0, 80) + TR(L"“\nDatei: ", L"”\nFile: ") + g_iniPath;
+                  TR(L"\n\nInhalt der Zeile: „", L"\n\nLine content: “") + line.substr(0, 80) + TR(L"“\nDatei: ", L"”\nFile: ") + path;
             return false;
         }
         Profile& p = ps[cur];
@@ -458,6 +584,47 @@ static bool loadProfiles(vector<Profile>& ps, wstring& err) {
                 }
                 p.dns.push_back(a);
             }
+        } else if (k == L"ipv6") {
+            wstring lv = lower(v);
+            p.ip6mode = (lv == L"auto" || lv == L"automatic") ? 1 : (lv == L"static" || lv == L"statisch") ? 2 : 0;
+        } else if (k == L"ip6") {
+            for (auto& t : splitList(v)) {
+                Ip6 r;
+                if (!parseCidr6(t, r, e2)) {
+                    err = fmt(TR(L"Zeile %d: ", L"Line %d: "), lineNo) + e2;
+                    return false;
+                }
+                p.ips6.push_back(r);
+            }
+        } else if (k == L"gateway6") {
+            if (!v.empty()) {
+                if (!parseIp6(v, p.gw6)) {
+                    err = fmt(TR(L"Zeile %d: Ungültiges IPv6-Gateway: ", L"Line %d: invalid IPv6 gateway: "), lineNo) + v;
+                    return false;
+                }
+                p.hasGw6 = true;
+            }
+        } else if (k == L"dns6") {
+            for (auto& t : splitList(v)) {
+                IN6_ADDR a;
+                if (!parseIp6(t, a)) {
+                    err = fmt(TR(L"Zeile %d: Ungültiger IPv6-DNS-Server: ", L"Line %d: invalid IPv6 DNS server: "), lineNo) + t;
+                    return false;
+                }
+                p.dns6.push_back(a);
+            }
+        } else if (k == L"auto") {
+            wstring lv = lower(v);
+            p.autoOn = (lv == L"yes" || lv == L"ja" || lv == L"1" || lv == L"true" || lv == L"on");
+        } else if (k == L"auto_gateway_mac") {
+            p.autoMac = normMac(v);
+        } else if (k == L"auto_ping") {
+            p.autoPing = v;
+        } else if (k == L"auto_arp_ip") {
+            p.autoArpIp = v;
+        } else if (k == L"auto_arp_mac") {
+            p.autoArpMac = normMac(v);
+        } else if (k == L"auto_probe") {
         } else {
             err = fmt(TR(L"Zeile %d: Unbekannter Schlüssel '", L"Line %d: unknown key '"), lineNo) + k + L"'";
             return false;
@@ -473,9 +640,15 @@ static bool loadProfiles(vector<Profile>& ps, wstring& err) {
             err = TR(L"Profil [", L"Profile [") + p.name + TR(L"]: statisch, aber keine 'ip' angegeben", L"]: static, but no 'ip' given");
             return false;
         }
+        if (p.ip6mode == 2 && p.ips6.empty()) {
+            err = TR(L"Profil [", L"Profile [") + p.name + TR(L"]: IPv6 statisch, aber keine 'ip6' angegeben", L"]: static IPv6, but no 'ip6' given");
+            return false;
+        }
     }
     return true;
 }
+
+static bool loadProfiles(vector<Profile>& ps, wstring& err) { return loadProfilesFrom(g_iniPath, ps, err); }
 
 static const Profile* findProfile(const vector<Profile>& ps, const wstring& name) {
     for (auto& p : ps)
@@ -485,7 +658,7 @@ static const Profile* findProfile(const vector<Profile>& ps, const wstring& name
 
 static wstring cidrStr(const Ip4& w) { return ipStr(w.addr) + fmt(L"/%u", (unsigned)w.prefix); }
 
-static bool saveProfiles(const vector<Profile>& ps, wstring& err) {
+static bool writeProfilesTo(const wstring& path, const vector<Profile>& ps, wstring& err) {
     wstring t = TR(L"# MilleIpSwitch – Profile\r\n"
                    L"# Wird von der Profilverwaltung geschrieben, kann aber auch von Hand bearbeitet werden.\r\n\r\n",
                    L"# MilleIpSwitch – profiles\r\n"
@@ -505,14 +678,36 @@ static bool saveProfiles(const vector<Profile>& ps, wstring& err) {
             for (size_t i = 0; i < p.dns.size(); ++i) t += (i ? L", " : L"") + ipStr(p.dns[i]);
             t += L"\r\n";
         }
+        if (p.ip6mode) {
+            t += wstring(L"ipv6    = ") + (p.ip6mode == 1 ? L"auto" : L"static") + L"\r\n";
+            if (p.ip6mode == 2) {
+                t += L"ip6     = ";
+                for (size_t i = 0; i < p.ips6.size(); ++i) t += (i ? L", " : L"") + cidr6Str(p.ips6[i]);
+                t += L"\r\n";
+                if (p.hasGw6) t += L"gateway6 = " + ip6Str(p.gw6) + L"\r\n";
+            }
+            if (!p.dns6.empty()) {
+                t += L"dns6    = ";
+                for (size_t i = 0; i < p.dns6.size(); ++i) t += (i ? L", " : L"") + ip6Str(p.dns6[i]);
+                t += L"\r\n";
+            }
+        }
+        if (p.autoOn) {
+            t += L"auto    = yes\r\n";
+            if (!p.autoMac.empty()) t += L"auto_gateway_mac = " + p.autoMac + L"\r\n";
+            if (!p.autoPing.empty()) t += L"auto_ping = " + p.autoPing + L"\r\n";
+            if (!p.autoArpIp.empty()) {
+                t += L"auto_arp_ip = " + p.autoArpIp + L"\r\n";
+                if (!p.autoArpMac.empty()) t += L"auto_arp_mac = " + p.autoArpMac + L"\r\n";
+            }
+        }
         t += L"\r\n";
     }
     int n = WideCharToMultiByte(CP_UTF8, 0, t.c_str(), (int)t.size(), nullptr, 0, nullptr, nullptr);
     string data = "\xEF\xBB\xBF" + string(n, '\0');
     WideCharToMultiByte(CP_UTF8, 0, t.c_str(), (int)t.size(), &data[3], n, nullptr, nullptr);
 
-    CopyFileW(g_iniPath.c_str(), (g_iniPath + L".bak").c_str(), FALSE);
-    wstring tmp = g_iniPath + L".tmp";
+    wstring tmp = path + L".tmp";
     HANDLE f = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
     if (f == INVALID_HANDLE_VALUE) {
         err = fmt(TR(L"Kann nicht schreiben (Fehler %lu): ", L"Cannot write (error %lu): "), GetLastError()) + tmp;
@@ -522,12 +717,36 @@ static bool saveProfiles(const vector<Profile>& ps, wstring& err) {
     BOOL ok = WriteFile(f, data.data(), (DWORD)data.size(), &wr, nullptr);
     CloseHandle(f);
     if (!ok || wr != data.size() ||
-        !MoveFileExW(tmp.c_str(), g_iniPath.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-        err = fmt(TR(L"Speichern fehlgeschlagen (Fehler %lu): ", L"Saving failed (error %lu): "), GetLastError()) + g_iniPath;
+        !MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        err = fmt(TR(L"Speichern fehlgeschlagen (Fehler %lu): ", L"Saving failed (error %lu): "), GetLastError()) + path;
         DeleteFileW(tmp.c_str());
         return false;
     }
     return true;
+}
+
+static void backupProfiles() {
+    if (GetFileAttributesW(g_iniPath.c_str()) == INVALID_FILE_ATTRIBUTES) return;
+    wstring dir = g_iniPath.substr(0, g_iniPath.find_last_of(L'\\')) + L"\\backups";
+    CreateDirectoryW(dir.c_str(), nullptr);
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    wstring name = dir + fmt(L"\\profiles_%04d%02d%02d_%02d%02d%02d.ini", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+    CopyFileW(g_iniPath.c_str(), name.c_str(), FALSE);
+    vector<wstring> files;
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW((dir + L"\\profiles_*.ini").c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do files.push_back(fd.cFileName);
+    while (FindNextFileW(h, &fd));
+    FindClose(h);
+    std::sort(files.begin(), files.end());
+    for (size_t i = 0; i + 10 < files.size(); ++i) DeleteFileW((dir + L"\\" + files[i]).c_str());
+}
+
+static bool saveProfiles(const vector<Profile>& ps, wstring& err) {
+    backupProfiles();
+    return writeProfilesTo(g_iniPath, ps, err);
 }
 
 // Adapters
@@ -539,10 +758,14 @@ struct Adapter {
     bool dhcp = false, up = false;
     vector<Ip4> ips;
     vector<IN_ADDR> gws, dns;
+    vector<Ip6> ips6;
+    vector<IN6_ADDR> gws6, dns6;
     int kind = 0;
     bool bluetooth = false;
     ULONG64 speed = 0;
     bool enabled = true;
+    bool hasMetric = false, autoMetric = true;
+    ULONG metric = 0;
     bool hasDhcpSrv = false;
     IN_ADDR dhcpSrv{};
     wstring mac;
@@ -658,7 +881,7 @@ static vector<Adapter> getAdapters(bool withDisabled) {
     ULONG ret = ERROR_BUFFER_OVERFLOW;
     for (int i = 0; i < 3 && ret == ERROR_BUFFER_OVERFLOW; ++i) {
         buf.resize(len);
-        ret = GetAdaptersAddresses(AF_INET,
+        ret = GetAdaptersAddresses(AF_UNSPEC,
                                    GAA_FLAG_INCLUDE_GATEWAYS | GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST,
                                    nullptr, (PIP_ADAPTER_ADDRESSES)buf.data(), &len);
     }
@@ -675,6 +898,17 @@ static vector<Adapter> getAdapters(bool withDisabled) {
         d.dhcp = (a->Flags & IP_ADAPTER_DHCP_ENABLED) != 0;
         d.up = a->OperStatus == IfOperStatusUp;
         d.speed = a->TransmitLinkSpeed;
+        {
+            MIB_IPINTERFACE_ROW ir;
+            InitializeIpInterfaceEntry(&ir);
+            ir.Family = AF_INET;
+            ir.InterfaceLuid = a->Luid;
+            if (GetIpInterfaceEntry(&ir) == NO_ERROR) {
+                d.hasMetric = true;
+                d.metric = ir.Metric;
+                d.autoMetric = ir.UseAutomaticMetric != 0;
+            }
+        }
         if (a->Dhcpv4Server.lpSockaddr && a->Dhcpv4Server.lpSockaddr->sa_family == AF_INET) {
             d.dhcpSrv = ((sockaddr_in*)a->Dhcpv4Server.lpSockaddr)->sin_addr;
             d.hasDhcpSrv = d.dhcpSrv.s_addr != 0;
@@ -686,19 +920,37 @@ static vector<Adapter> getAdapters(bool withDisabled) {
         row.InterfaceLuid = a->Luid;
         if (GetIfEntry2(&row) == NO_ERROR) hw = row.InterfaceAndOperStatusFlags.HardwareInterface != 0;
         d.kind = classify(d.friendly, d.desc, a->IfType, hw, d.bluetooth);
-        for (auto u = a->FirstUnicastAddress; u; u = u->Next)
-            if (u->Address.lpSockaddr->sa_family == AF_INET) {
+        for (auto u = a->FirstUnicastAddress; u; u = u->Next) {
+            int fam = u->Address.lpSockaddr->sa_family;
+            if (fam == AF_INET) {
                 Ip4 x;
                 x.addr = ((sockaddr_in*)u->Address.lpSockaddr)->sin_addr;
                 x.prefix = u->OnLinkPrefixLength;
                 d.ips.push_back(x);
+            } else if (fam == AF_INET6) {
+                Ip6 x;
+                x.addr = ((sockaddr_in6*)u->Address.lpSockaddr)->sin6_addr;
+                x.prefix = u->OnLinkPrefixLength;
+                x.linkLocal = IN6_IS_ADDR_LINKLOCAL(&x.addr) != 0;
+                x.manual = u->PrefixOrigin == IpPrefixOriginManual;
+                x.temp = u->SuffixOrigin == IpSuffixOriginRandom;
+                d.ips6.push_back(x);
             }
-        for (auto g = a->FirstGatewayAddress; g; g = g->Next)
-            if (g->Address.lpSockaddr->sa_family == AF_INET)
-                d.gws.push_back(((sockaddr_in*)g->Address.lpSockaddr)->sin_addr);
-        for (auto s = a->FirstDnsServerAddress; s; s = s->Next)
-            if (s->Address.lpSockaddr->sa_family == AF_INET)
-                d.dns.push_back(((sockaddr_in*)s->Address.lpSockaddr)->sin_addr);
+        }
+        for (auto g = a->FirstGatewayAddress; g; g = g->Next) {
+            int fam = g->Address.lpSockaddr->sa_family;
+            if (fam == AF_INET) d.gws.push_back(((sockaddr_in*)g->Address.lpSockaddr)->sin_addr);
+            else if (fam == AF_INET6) d.gws6.push_back(((sockaddr_in6*)g->Address.lpSockaddr)->sin6_addr);
+        }
+        for (auto sv = a->FirstDnsServerAddress; sv; sv = sv->Next) {
+            int fam = sv->Address.lpSockaddr->sa_family;
+            if (fam == AF_INET) {
+                d.dns.push_back(((sockaddr_in*)sv->Address.lpSockaddr)->sin_addr);
+            } else if (fam == AF_INET6) {
+                const IN6_ADDR& x = ((sockaddr_in6*)sv->Address.lpSockaddr)->sin6_addr;
+                if (!IN6_IS_ADDR_SITELOCAL(&x)) d.dns6.push_back(x);
+            }
+        }
         r.push_back(d);
     }
     if (withDisabled) appendDisabledAdapters(r);
@@ -711,6 +963,50 @@ static const Adapter* findAdapter(const vector<Adapter>& ads, const wstring& nam
     for (auto& a : ads)
         if (ieq(a.desc, name)) return &a;
     return nullptr;
+}
+
+static bool arpMac(IPAddr dst, IPAddr src, wstring& mac) {
+    ULONG phys[2] = {0, 0}, len = 6;
+    if (SendARP(dst, src, phys, &len) != NO_ERROR || len < 6) return false;
+    const BYTE* b = (const BYTE*)phys;
+    mac.clear();
+    for (int i = 0; i < 6; ++i) mac += fmt(i ? L"-%02X" : L"%02X", (unsigned)b[i]);
+    return true;
+}
+
+static bool arpFresh(const Adapter& a, IPAddr dst, wstring& mac) {
+    MIB_IPNET_ROW2 row;
+    memset(&row, 0, sizeof(row));
+    row.Address.si_family = AF_INET;
+    row.Address.Ipv4.sin_family = AF_INET;
+    row.Address.Ipv4.sin_addr.s_addr = dst;
+    row.InterfaceLuid = a.luid;
+    if (GetIpNetEntry2(&row) == NO_ERROR && row.State != NlnsPermanent) DeleteIpNetEntry2(&row);
+    return arpMac(dst, a.ips.empty() ? 0 : a.ips[0].addr.s_addr, mac);
+}
+
+static bool gatewayMac(const Adapter& a, wstring& mac) {
+    if (a.gws.empty()) return false;
+    return arpMac(a.gws[0].s_addr, a.ips.empty() ? 0 : a.ips[0].addr.s_addr, mac);
+}
+
+static bool pingHost(const wstring& host) {
+    IN_ADDR a{};
+    if (!parseIp(host, a)) {
+        ADDRINFOW hints{}, *res = nullptr;
+        hints.ai_family = AF_INET;
+        if (GetAddrInfoW(host.c_str(), nullptr, &hints, &res) != 0 || !res) return false;
+        a = ((sockaddr_in*)res->ai_addr)->sin_addr;
+        FreeAddrInfoW(res);
+    }
+    HANDLE h = IcmpCreateFile();
+    if (h == INVALID_HANDLE_VALUE) return false;
+    char data[8] = "MilleIp";
+    BYTE reply[256];
+    DWORD n = IcmpSendEcho(h, a.s_addr, data, sizeof(data), nullptr, reply, sizeof(reply), 1000);
+    bool ok = n > 0 && ((ICMP_ECHO_REPLY*)reply)->Status == IP_SUCCESS;
+    IcmpCloseHandle(h);
+    return ok;
 }
 
 static bool isActive(const Profile& p, const vector<Adapter>& ads) {
@@ -729,6 +1025,26 @@ static bool isActive(const Profile& p, const vector<Adapter>& ads) {
         if (a->dns.size() != p.dns.size()) return false;
         for (size_t i = 0; i < p.dns.size(); ++i)
             if (!sameAddr(p.dns[i], a->dns[i])) return false;
+    }
+    if (p.ip6mode) {
+        size_t manual = 0;
+        for (auto& x : a->ips6)
+            if (x.manual && !x.linkLocal) ++manual;
+        if (p.ip6mode == 1 && manual) return false;
+        if (p.ip6mode == 2) {
+            if (manual != p.ips6.size()) return false;
+            for (auto& w : p.ips6) {
+                bool found = false;
+                for (auto& x : a->ips6)
+                    if (x.manual && sameAddr6(w.addr, x.addr) && w.prefix == x.prefix) found = true;
+                if (!found) return false;
+            }
+        }
+        if (!p.dns6.empty()) {
+            if (a->dns6.size() != p.dns6.size()) return false;
+            for (size_t i = 0; i < p.dns6.size(); ++i)
+                if (!sameAddr6(p.dns6[i], a->dns6[i])) return false;
+        }
     }
     return true;
 }
@@ -927,6 +1243,122 @@ static bool applyDns(const Adapter& a, const Profile& p, wstring& log) {
     return ok;
 }
 
+static void rememberLast(const Profile& p) {
+    HKEY k;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\MilleIpSwitch\\Last", 0, nullptr, 0, KEY_SET_VALUE, nullptr, &k, nullptr) != ERROR_SUCCESS)
+        return;
+    RegSetValueExW(k, p.adapter.c_str(), 0, REG_SZ, (const BYTE*)p.name.c_str(), (DWORD)((p.name.size() + 1) * sizeof(wchar_t)));
+    RegCloseKey(k);
+}
+
+static bool applyIpv6(const Adapter& a, const Profile& p, wstring& log) {
+    if (p.ip6mode == 0) return true;
+    bool ok = true;
+    bool stat = p.ip6mode == 2;
+
+    MIB_IPINTERFACE_ROW ir;
+    InitializeIpInterfaceEntry(&ir);
+    ir.Family = AF_INET6;
+    ir.InterfaceLuid = a.luid;
+    if (GetIpInterfaceEntry(&ir) == NO_ERROR) {
+        ir.RouterDiscoveryBehavior = stat ? RouterDiscoveryDisabled : RouterDiscoveryDhcp;
+        DWORD e = SetIpInterfaceEntry(&ir);
+        if (e != NO_ERROR) log += fmt(L"IPv6 interface: error %lu\n", e);
+    }
+
+    PMIB_UNICASTIPADDRESS_TABLE t = nullptr;
+    if (GetUnicastIpAddressTable(AF_INET6, &t) == NO_ERROR) {
+        for (ULONG i = 0; i < t->NumEntries; ++i) {
+            MIB_UNICASTIPADDRESS_ROW& row = t->Table[i];
+            if (row.InterfaceLuid.Value != a.luid.Value) continue;
+            IN6_ADDR x = row.Address.Ipv6.sin6_addr;
+            if (IN6_IS_ADDR_LINKLOCAL(&x)) continue;
+            bool wanted = false;
+            if (stat)
+                for (auto& w : p.ips6)
+                    if (sameAddr6(w.addr, x) && w.prefix == row.OnLinkPrefixLength) wanted = true;
+            bool manual = row.PrefixOrigin == IpPrefixOriginManual;
+            if (!wanted && (stat || manual)) {
+                DWORD e = DeleteUnicastIpAddressEntry(&row);
+                if (e != NO_ERROR && e != ERROR_NOT_FOUND) log += fmt(L"IPv6 delete: error %lu\n", e);
+            }
+        }
+        FreeMibTable(t);
+    }
+    if (stat)
+        for (auto& w : p.ips6) {
+            MIB_UNICASTIPADDRESS_ROW r;
+            InitializeUnicastIpAddressEntry(&r);
+            r.InterfaceLuid = a.luid;
+            r.Address.si_family = AF_INET6;
+            r.Address.Ipv6.sin6_family = AF_INET6;
+            r.Address.Ipv6.sin6_addr = w.addr;
+            r.OnLinkPrefixLength = w.prefix;
+            r.PrefixOrigin = IpPrefixOriginManual;
+            r.SuffixOrigin = IpSuffixOriginManual;
+            r.DadState = IpDadStatePreferred;
+            DWORD e = CreateUnicastIpAddressEntry(&r);
+            if (e != NO_ERROR && e != ERROR_OBJECT_ALREADY_EXISTS) {
+                log += fmt(L"IPv6 set: error %lu\n", e);
+                ok = false;
+            }
+        }
+
+    bool present = false;
+    PMIB_IPFORWARD_TABLE2 ft = nullptr;
+    if (GetIpForwardTable2(AF_INET6, &ft) == NO_ERROR) {
+        for (ULONG i = 0; i < ft->NumEntries; ++i) {
+            MIB_IPFORWARD_ROW2& row = ft->Table[i];
+            if (row.InterfaceLuid.Value != a.luid.Value || row.DestinationPrefix.PrefixLength != 0) continue;
+            if (stat && p.hasGw6 && sameAddr6(row.NextHop.Ipv6.sin6_addr, p.gw6)) {
+                present = true;
+                continue;
+            }
+            if (stat || row.Origin == NlroManual) {
+                DWORD e = DeleteIpForwardEntry2(&row);
+                if (e != NO_ERROR && e != ERROR_NOT_FOUND) log += fmt(L"IPv6 gateway delete: error %lu\n", e);
+            }
+        }
+        FreeMibTable(ft);
+    }
+    if (stat && p.hasGw6 && !present) {
+        MIB_IPFORWARD_ROW2 r;
+        InitializeIpForwardEntry(&r);
+        r.InterfaceLuid = a.luid;
+        r.DestinationPrefix.Prefix.si_family = AF_INET6;
+        r.DestinationPrefix.Prefix.Ipv6.sin6_family = AF_INET6;
+        r.DestinationPrefix.PrefixLength = 0;
+        r.NextHop.si_family = AF_INET6;
+        r.NextHop.Ipv6.sin6_family = AF_INET6;
+        r.NextHop.Ipv6.sin6_addr = p.gw6;
+        r.Protocol = (NL_ROUTE_PROTOCOL)MIB_IPPROTO_NETMGMT;
+        r.Origin = NlroManual;
+        r.Metric = 0;
+        DWORD e = CreateIpForwardEntry2(&r);
+        if (e != NO_ERROR && e != ERROR_OBJECT_ALREADY_EXISTS) {
+            log += fmt(L"IPv6 gateway set: error %lu\n", e);
+            ok = false;
+        }
+    }
+
+    static PFN_SetInterfaceDnsSettings fn =
+        (PFN_SetInterfaceDnsSettings)(void*)GetProcAddress(LoadLibraryW(L"iphlpapi.dll"), "SetInterfaceDnsSettings");
+    if (fn) {
+        wstring list;
+        for (size_t i = 0; i < p.dns6.size(); ++i) list += (i ? L"," : L"") + ip6Str(p.dns6[i]);
+        DnsIfSettings sd{};
+        sd.Version = 1;
+        sd.Flags = 0x0003;
+        sd.NameServer = &list[0];
+        DWORD e = fn(a.guid, &sd);
+        if (e != NO_ERROR) {
+            log += fmt(L"IPv6 DNS: error %lu\n", e);
+            ok = false;
+        }
+    }
+    return ok;
+}
+
 static bool applyProfile(const Profile& p, wstring& msg) {
     double t0 = nowMs();
     vector<Adapter> ads = getAdapters();
@@ -967,11 +1399,13 @@ static bool applyProfile(const Profile& p, wstring& msg) {
         ok = persistStatic(*a, p, log) && ok;
     }
     ok = applyDns(*a, p, log) && ok;
+    ok = applyIpv6(*a, p, log) && ok;
 
     double ms = nowMs() - t0;
     msg = fmt(L"%ls → %ls: %ls (%.0f ms%ls)", p.name.c_str(), a->friendly.c_str(), ok ? L"OK" : TR(L"mit Fehlern", L"with errors"), ms,
               viaNetsh ? TR(L", inkl. DHCP-Moduswechsel", L", incl. DHCP mode change") : L"");
     if (!log.empty()) msg += L"\n" + log;
+    if (ok) rememberLast(p);
     return ok;
 }
 
@@ -1163,7 +1597,7 @@ static HWND startTrayViaTask() {
 namespace G {
 const wchar_t Ethernet = 0xE839, Wifi = 0xE701, Vpn = 0xE705, Bluetooth = 0xE702, Monitor = 0xE7F4,
               Globe = 0xE774, Network = 0xE968, Check = 0xE73E, Settings = 0xE713, Power = 0xE7E8,
-              Refresh = 0xE72C, Delete = 0xE74D, Completed = 0xE930, Error = 0xE783, Info = 0xE946, Add = 0xE710,
+              Refresh = 0xE72C, Sort = 0xE8CB, Delete = 0xE74D, Completed = 0xE930, Error = 0xE783, Info = 0xE946, Add = 0xE710,
               CheckboxOn = 0xE73A, CheckboxOff = 0xE739;
 }
 
@@ -1369,7 +1803,7 @@ static void regSetFlag(const wchar_t* name) {
 #define WM_APPLYDONE (WM_APP + 2)
 #define WM_OPENEDITOR (WM_APP + 3)
 #define WM_FIRSTRUN (WM_APP + 4)
-enum { ID_STATUS = 1, ID_EDITOR, ID_EXIT, ID_AUTOSTART, ID_LANG0 = 10, ID_PROFILE0 = 1000 };
+enum { ID_STATUS = 1, ID_EDITOR, ID_EXIT, ID_AUTOSTART, ID_LANG0 = 10, ID_UPD_OPEN = 20, ID_UPD_CHECK, ID_UPD_AUTO, ID_AUTOSW, ID_PROFILE0 = 1000 };
 
 static HWND g_hwnd, g_hDlg, g_hStatus;
 static HICON g_icon, g_iconBig, g_iconMenu, g_iconWinSm, g_iconWinBig;
@@ -1378,6 +1812,13 @@ static UINT g_taskbarCreated;
 static vector<Profile> g_profiles;
 static volatile LONG g_busy = 0;
 static bool g_autostart = false;
+static bool g_balloonUpdate = false;
+static bool g_autoEnabled = true;
+static int g_applyKind = 0;
+static vector<Profile> g_restoreQueue;
+static std::map<wstring, DWORD> g_autoHold;
+static wstring g_updateTag, g_updateUrl;
+static bool g_updateAuto = true;
 static void setLanguage(int lang);
 static void langPopup(HWND anchor);
 
@@ -1406,11 +1847,152 @@ static void trayEnsure() {
 }
 
 static void trayBalloon(const wstring& title, const wstring& text, bool err) {
+    g_balloonUpdate = false;
     g_nid.uFlags = NIF_INFO;
     lstrcpynW(g_nid.szInfoTitle, title.c_str(), ARRAYSIZE(g_nid.szInfoTitle));
     lstrcpynW(g_nid.szInfo, text.c_str(), ARRAYSIZE(g_nid.szInfo));
     g_nid.dwInfoFlags = err ? NIIF_ERROR : NIIF_INFO;
     Shell_NotifyIconW(NIM_MODIFY, &g_nid);
+}
+
+#define WM_UPDATEDONE (WM_APP + 5)
+#define TIMER_UPDATE 10
+
+struct UpdateResult {
+    int status;
+    wstring tag;
+    bool manual;
+};
+
+static void regSetDword(const wchar_t* name, DWORD v) {
+    HKEY k;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\MilleIpSwitch", 0, nullptr, 0, KEY_SET_VALUE, nullptr, &k, nullptr) !=
+        ERROR_SUCCESS)
+        return;
+    RegSetValueExW(k, name, 0, REG_DWORD, (const BYTE*)&v, sizeof(v));
+    RegCloseKey(k);
+}
+
+static DWORD todayDays() {
+    FILETIME ft;
+    GetSystemTimeAsFileTime(&ft);
+    ULARGE_INTEGER u;
+    u.LowPart = ft.dwLowDateTime;
+    u.HighPart = ft.dwHighDateTime;
+    return (DWORD)(u.QuadPart / 864000000000ULL);
+}
+
+static void parseVersion(const wstring& s, int v[3]) {
+    v[0] = v[1] = v[2] = 0;
+    size_t i = (!s.empty() && (s[0] == L'v' || s[0] == L'V')) ? 1 : 0;
+    for (int idx = 0; i < s.size() && idx < 3; ++i) {
+        if (s[i] >= L'0' && s[i] <= L'9') v[idx] = v[idx] * 10 + (s[i] - L'0');
+        else if (s[i] == L'.') ++idx;
+        else break;
+    }
+}
+
+static bool isNewerVersion(const wstring& tag) {
+    int a[3], b[3];
+    parseVersion(tag, a);
+    parseVersion(NS_VERSION, b);
+    for (int i = 0; i < 3; ++i)
+        if (a[i] != b[i]) return a[i] > b[i];
+    return false;
+}
+
+static string httpsGet(const wchar_t* host, const wchar_t* path, DWORD& status) {
+    string body;
+    status = 0;
+    HINTERNET ses = WinHttpOpen(L"MilleIpSwitch/" NS_VERSION, WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME,
+                                WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!ses) return body;
+    WinHttpSetTimeouts(ses, 5000, 5000, 8000, 8000);
+    HINTERNET con = WinHttpConnect(ses, host, INTERNET_DEFAULT_HTTPS_PORT, 0);
+    HINTERNET req = con ? WinHttpOpenRequest(con, L"GET", path, nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
+                                             WINHTTP_FLAG_SECURE)
+                        : nullptr;
+    if (req && WinHttpSendRequest(req, L"Accept: application/vnd.github+json\r\n", (DWORD)-1L, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
+        WinHttpReceiveResponse(req, nullptr)) {
+        DWORD sz = sizeof(status);
+        WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &status,
+                            &sz, WINHTTP_NO_HEADER_INDEX);
+        DWORD avail = 0;
+        while (body.size() < 200000 && WinHttpQueryDataAvailable(req, &avail) && avail) {
+            string chunk(avail, '\0');
+            DWORD got = 0;
+            if (!WinHttpReadData(req, &chunk[0], avail, &got) || !got) break;
+            body.append(chunk, 0, got);
+        }
+    }
+    if (req) WinHttpCloseHandle(req);
+    if (con) WinHttpCloseHandle(con);
+    WinHttpCloseHandle(ses);
+    return body;
+}
+
+static string jsonString(const string& j, const char* key) {
+    string k = string("\"") + key + "\"";
+    size_t p = j.find(k);
+    if (p == string::npos) return "";
+    p = j.find(':', p + k.size());
+    if (p == string::npos) return "";
+    p = j.find('"', p);
+    if (p == string::npos) return "";
+    size_t e = j.find('"', p + 1);
+    return e == string::npos ? "" : j.substr(p + 1, e - p - 1);
+}
+
+static DWORD WINAPI updateWorker(LPVOID manual) {
+    DWORD st = 0;
+    string body = httpsGet(L"api.github.com", L"/repos/666mille/MilleIpSwitch/releases/latest", st);
+    auto* r = new UpdateResult{0, L"", manual != nullptr};
+    if (st == 200) {
+        string tag = jsonString(body, "tag_name");
+        bool valid = !tag.empty() && tag.size() < 32;
+        for (char c : tag)
+            if (!isalnum((unsigned char)c) && c != '.' && c != '-' && c != '_') valid = false;
+        if (valid) {
+            r->tag = wstring(tag.begin(), tag.end());
+            r->status = isNewerVersion(r->tag) ? 2 : 1;
+        }
+    } else if (st == 404) {
+        r->status = 3;
+    }
+    PostMessageW(g_hwnd, WM_UPDATEDONE, 0, (LPARAM)r);
+    return 0;
+}
+
+static void startUpdateCheck(bool manual) {
+    HANDLE h = CreateThread(nullptr, 0, updateWorker, manual ? (LPVOID)1 : nullptr, 0, nullptr);
+    if (h) CloseHandle(h);
+}
+
+static void openUpdatePage() {
+    if (g_updateUrl.rfind(L"https://github.com/666mille/MilleIpSwitch/", 0) == 0)
+        ShellExecuteW(nullptr, L"open", g_updateUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+}
+
+static void updateFinished(UpdateResult* r) {
+    if (r->status != 0) regSetDword(L"LastUpdateCheck", todayDays());
+    if (r->status == 2) {
+        g_updateTag = r->tag;
+        g_updateUrl = L"https://github.com/666mille/MilleIpSwitch/releases/tag/" + r->tag;
+        trayBalloon(TR(L"Update verfügbar", L"Update available"),
+                    fmt(TR(L"Version %ls ist verfügbar – klicken, um die Download-Seite zu öffnen.",
+                           L"Version %ls is available – click to open the download page."),
+                        r->tag.c_str()),
+                    false);
+        g_balloonUpdate = true;
+    } else if (r->manual) {
+        if (r->status == 1) g_updateTag.clear();
+        wstring msg = r->status == 1   ? fmt(TR(L"Du hast die neueste Version (%ls).", L"You have the latest version (%ls)."), NS_VERSION)
+                      : r->status == 3 ? wstring(TR(L"Noch keine veröffentlichte Version gefunden.", L"No published release found yet."))
+                                       : wstring(TR(L"Update-Prüfung fehlgeschlagen – GitHub nicht erreichbar.",
+                                                    L"Update check failed – could not reach GitHub."));
+        trayBalloon(L"MilleIpSwitch", msg, r->status == 0);
+    }
+    delete r;
 }
 
 static bool reloadProfiles(bool showError) {
@@ -1434,12 +2016,14 @@ static DWORD WINAPI applyWorker(LPVOID arg) {
     return 0;
 }
 
-static bool startApply(const Profile& p) {
+static bool startApply(const Profile& p, int kind = 0) {
     if (InterlockedCompareExchange(&g_busy, 1, 0) != 0) return false;
     Profile* job = new Profile(p);
     HANDLE h = CreateThread(nullptr, 0, applyWorker, job, 0, nullptr);
     if (h) {
         CloseHandle(h);
+        g_applyKind = kind;
+        if (kind == 0) g_autoHold[lower(p.adapter)] = GetTickCount() + 600000;
         return true;
     }
     delete job;
@@ -1490,8 +2074,8 @@ static bool openAdapterProperties(const wstring& name, HWND owner) {
 // Status window
 static vector<Adapter> g_stAds;
 static int g_stScroll = 0, g_stContentH = 0;
-static bool g_stShowDown = true, g_stShowDisabled = true;
-static RECT g_rcRefresh, g_rcToggle, g_rcToggle2, g_rcFlush;
+static bool g_stShowDown = true, g_stShowDisabled = true, g_stSortMetric = false;
+static RECT g_rcRefresh, g_rcToggle, g_rcToggle2, g_rcToggle3, g_rcFlush;
 static wstring g_stToast;
 static bool g_stToastErr = false;
 static string g_renewBusy;
@@ -1530,6 +2114,10 @@ static void stFonts(UINT dpi) {
     g_fBoldSmall = mkFont(L"Segoe UI", 85, 600, dpi);
 }
 
+static wstring metricText(const Adapter& a) {
+    return fmt(L"%lu", (unsigned long)a.metric) + L" (" + (a.autoMetric ? TR(L"automatisch", L"automatic") : TR(L"manuell", L"manual")) + L")";
+}
+
 static int adapterRank(const Adapter& a) { return a.up ? 0 : a.enabled ? 1 : 2; }
 
 static vector<std::pair<wstring, wstring>> stRows(const Adapter* a) {
@@ -1542,8 +2130,15 @@ static vector<std::pair<wstring, wstring>> stRows(const Adapter* a) {
     if (!v.empty()) rows.push_back({L"Gateway", v});
     if (a->dhcp && a->hasDhcpSrv) rows.push_back({TR(L"DHCP-Server", L"DHCP server"), ipStr(a->dhcpSrv)});
     v.clear();
+    for (auto& x : a->ips6)
+        if (!x.linkLocal && !x.temp) v += (v.empty() ? L"" : L", ") + cidr6Str(x);
+    if (!v.empty()) rows.push_back({L"IPv6", v});
+    if (!a->gws6.empty()) rows.push_back({TR(L"IPv6-Gateway", L"IPv6 gateway"), ip6Str(a->gws6[0])});
+    v.clear();
     for (size_t i = 0; i < a->dns.size(); ++i) v += (i ? L", " : L"") + ipStr(a->dns[i]);
+    for (auto& d6 : a->dns6) v += (v.empty() ? L"" : L", ") + ip6Str(d6);
     if (!v.empty()) rows.push_back({L"DNS", v});
+    if (a->hasMetric) rows.push_back({TR(L"Metrik", L"Metric"), metricText(*a)});
     if (a->up && a->speed && a->speed != ~0ULL) rows.push_back({TR(L"Verbindung", L"Link speed"), speedStr(a->speed)});
     if (!a->mac.empty()) rows.push_back({L"MAC", a->mac});
     return rows;
@@ -1570,13 +2165,20 @@ static void stPaint(HDC dc, RECT rc) {
     for (auto& a : g_stAds) nUp += a.up;
     g_gears.clear();
 
-    for (int k = 0; k < K_COUNT; ++k) {
+    for (int k = g_stSortMetric ? -1 : 0; k < (g_stSortMetric ? 0 : K_COUNT); ++k) {
         vector<const Adapter*> list;
         for (auto& a : g_stAds)
-            if (a.kind == k && (a.up || (a.enabled ? g_stShowDown : g_stShowDisabled))) list.push_back(&a);
+            if ((k < 0 || a.kind == k) && (a.up || (a.enabled ? g_stShowDown : g_stShowDisabled))) list.push_back(&a);
         if (list.empty()) continue;
-        std::stable_sort(list.begin(), list.end(),
-                         [](const Adapter* a, const Adapter* b) { return adapterRank(*a) < adapterRank(*b); });
+        if (k < 0)
+            std::stable_sort(list.begin(), list.end(), [](const Adapter* a, const Adapter* b) {
+                if (adapterRank(*a) != adapterRank(*b)) return adapterRank(*a) < adapterRank(*b);
+                ULONG ma = a->hasMetric ? a->metric : ~0UL, mb = b->hasMetric ? b->metric : ~0UL;
+                return ma < mb;
+            });
+        else
+            std::stable_sort(list.begin(), list.end(),
+                             [](const Adapter* a, const Adapter* b) { return adapterRank(*a) < adapterRank(*b); });
         shown += (int)list.size();
 
         vector<vector<std::pair<wstring, wstring>>> rowsOf;
@@ -1596,8 +2198,9 @@ static void stPaint(HDC dc, RECT rc) {
             fillRound(dc, hb, s(12), C::AccentBg, RGB(196, 220, 243));
             fillRect(dc, RECT{hb.left + 1, hb.bottom - s(8), hb.right - 1, hb.bottom}, C::AccentBg);
             fillRect(dc, RECT{hb.left, hb.bottom - 1, hb.right, hb.bottom}, RGB(196, 220, 243));
-            drawGlyph(dc, kindGlyph(k), RECT{x0 + s(8), y, x0 + s(32), y + s(32)}, C::Accent, g_fGlyph);
-            drawText(dc, kindName(k), RECT{x0 + s(38), y, x1 - s(60), y + s(32)}, C::Accent, g_fBold,
+            drawGlyph(dc, k < 0 ? G::Sort : kindGlyph(k), RECT{x0 + s(8), y, x0 + s(32), y + s(32)}, C::Accent, g_fGlyph);
+            drawText(dc, k < 0 ? TR(L"Nach Metrik sortiert", L"Sorted by metric") : kindName(k),
+                     RECT{x0 + s(38), y, x1 - s(60), y + s(32)}, C::Accent, g_fBold,
                      DT_LEFT | DT_VCENTER | DT_SINGLELINE);
             wstring cnt = fmt(L"%u", (unsigned)list.size());
             int cw = std::max(pillWidth(dc, cnt, g_fSmall, dpi), s(26));
@@ -1605,10 +2208,12 @@ static void stPaint(HDC dc, RECT rc) {
         }
 
         int cy0 = y + s(32) + s(8);
+        int rank = 0;
         for (size_t ci = 0; ci < list.size(); ++ci) {
             const Adapter* a = list[ci];
             auto& rows = rowsOf[ci];
             int cardH = hs[ci];
+            int myRank = (k < 0 && a->up) ? ++rank : 0;
             RECT card{x0 + s(8), cy0, x1 - s(8), cy0 + cardH};
             if (card.bottom > hdrH && card.top < rc.bottom) {
                 fillRound(dc, card, s(10), C::Card, C::Border);
@@ -1670,7 +2275,15 @@ static void stPaint(HDC dc, RECT rc) {
                 }
 
                 int tx = card.left + s(58);
-                drawText(dc, a->friendly, RECT{tx, card.top + s(8), pr - w1 - s(8), card.top + s(28)},
+                int nameX = tx;
+                if (myRank) {
+                    wstring rt = fmt(L"#%d", myRank);
+                    int rw = std::max(pillWidth(dc, rt, g_fSmall, dpi), s(30));
+                    drawPill(dc, rt, RECT{tx, card.top + s(10), tx + rw, card.top + s(28)},
+                             myRank == 1 ? C::Card : C::Accent, myRank == 1 ? C::Green : C::AccentBg, g_fSmall);
+                    nameX = tx + rw + s(6);
+                }
+                drawText(dc, a->friendly, RECT{nameX, card.top + s(8), pr - w1 - s(8), card.top + s(28)},
                          a->enabled ? C::Text : C::Sub, g_fBold, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
                 drawText(dc, a->desc, RECT{tx, card.top + s(28), colL - s(10), card.top + s(46)}, C::Sub, g_fSmall,
                          DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
@@ -1717,17 +2330,19 @@ static void stPaint(HDC dc, RECT rc) {
     drawText(dc, ft, RECT{g_rcFlush.left + s(30), g_rcFlush.top, g_rcFlush.right, g_rcFlush.bottom}, C::Text, g_fSmall,
              DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
-    wstring t1 = TR(L"Getrennte anzeigen", L"Show disconnected"), t2 = TR(L"Deaktivierte anzeigen", L"Show disabled");
-    int tw = std::max(textWidth(dc, t1, g_fSmall), textWidth(dc, t2, g_fSmall)) + s(24);
+    wstring tt[3] = {TR(L"Getrennte anzeigen", L"Show disconnected"), TR(L"Deaktivierte anzeigen", L"Show disabled"),
+                     TR(L"Nach Metrik sortieren", L"Sort by metric")};
+    int tw = std::max({textWidth(dc, tt[0], g_fSmall), textWidth(dc, tt[1], g_fSmall), textWidth(dc, tt[2], g_fSmall)}) + s(30);
     int tl = g_rcFlush.left - s(12) - tw;
-    g_rcToggle = RECT{tl, s(12), tl + tw, s(31)};
-    g_rcToggle2 = RECT{tl, s(33), tl + tw, s(52)};
-    for (int i = 0; i < 2; ++i) {
-        RECT r = i ? g_rcToggle2 : g_rcToggle;
-        bool on = i ? g_stShowDisabled : g_stShowDown;
-        drawGlyph(dc, on ? G::CheckboxOn : G::CheckboxOff, RECT{r.left, r.top, r.left + s(18), r.bottom},
-                  on ? C::Accent : C::Sub, g_fGlyphSmall);
-        drawText(dc, i ? t2 : t1, RECT{r.left + s(22), r.top, r.right, r.bottom}, C::Text, g_fSmall,
+    RECT* trc[3] = {&g_rcToggle, &g_rcToggle2, &g_rcToggle3};
+    bool ton[3] = {g_stShowDown, g_stShowDisabled, g_stSortMetric};
+    for (int i = 0; i < 3; ++i) {
+        RECT r{tl, s(3) + i * s(20), tl + tw, s(3) + i * s(20) + s(19)};
+        *trc[i] = r;
+        if (i == 2 && ton[i]) fillRound(dc, r, s(6), C::AccentBg, C::AccentBg);
+        drawGlyph(dc, i == 2 ? G::Sort : ton[i] ? G::CheckboxOn : G::CheckboxOff, RECT{r.left + s(2), r.top, r.left + s(20), r.bottom},
+                  ton[i] || i == 2 ? C::Accent : C::Sub, g_fGlyphSmall);
+        drawText(dc, tt[i], RECT{r.left + s(24), r.top, r.right, r.bottom}, i == 2 && ton[i] ? C::Accent : C::Text, g_fSmall,
                  DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     }
 
@@ -1936,6 +2551,10 @@ static LRESULT CALLBACK stProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
                 SetTimer(h, 2, 3500, nullptr);
                 InvalidateRect(h, nullptr, FALSE);
             }
+        } else if (PtInRect(&g_rcToggle3, pt)) {
+            g_stSortMetric = !g_stSortMetric;
+            g_stScroll = 0;
+            InvalidateRect(h, nullptr, FALSE);
         } else if (PtInRect(&g_rcToggle, pt) || PtInRect(&g_rcToggle2, pt)) {
             bool& f = PtInRect(&g_rcToggle, pt) ? g_stShowDown : g_stShowDisabled;
             f = !f;
@@ -1949,7 +2568,7 @@ static LRESULT CALLBACK stProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
             POINT pt;
             GetCursorPos(&pt);
             ScreenToClient(h, &pt);
-            bool hand = PtInRect(&g_rcRefresh, pt) || PtInRect(&g_rcToggle, pt) || PtInRect(&g_rcToggle2, pt) || PtInRect(&g_rcFlush, pt);
+            bool hand = PtInRect(&g_rcRefresh, pt) || PtInRect(&g_rcToggle, pt) || PtInRect(&g_rcToggle2, pt) || PtInRect(&g_rcToggle3, pt) || PtInRect(&g_rcFlush, pt);
             for (auto& g : g_gears)
                 if (PtInRect(&g.r, pt)) hand = true;
             if (hand) {
@@ -2058,7 +2677,7 @@ static const int kRightIds[] = {IDC_NAME,     IDC_ADAPTER,  IDC_READCUR,  IDC_DH
                                 IDC_DNSMAN,   IDC_DNS1,     IDC_DNS2,     IDC_LBL_NAME,  IDC_LBL_ADAPTER,
                                 IDC_LBL_IP,   IDC_LBL_MASK, IDC_LBL_GW,   IDC_LBL_EXTRA, IDC_LBL_DNS1,
                                 IDC_LBL_DNS2, IDC_GRP_IP,   IDC_GRP_DNS,  IDC_DUP,       IDC_DEL,
-                                IDC_UP,       IDC_DOWN,     IDC_ACTIVATE};
+                                IDC_UP,       IDC_DOWN,     IDC_ACTIVATE, IDC_IPV6BTN,   IDC_AUTOBTN};
 
 static wstring dlgText(HWND d, int id) {
     HWND h = GetDlgItem(d, id);
@@ -2132,6 +2751,15 @@ static void edFillAdapters(HWND d) {
     SetWindowTextW(c, cur.c_str());
 }
 
+static void edExtraButtons(HWND d, const Profile* p) {
+    wstring v6 = TR(L"IPv6 …", L"IPv6 …");
+    if (p && p->ip6mode == 1) v6 = TR(L"IPv6: automatisch", L"IPv6: automatic");
+    else if (p && p->ip6mode == 2) v6 = TR(L"IPv6: statisch", L"IPv6: static");
+    SetDlgItemTextW(d, IDC_IPV6BTN, v6.c_str());
+    wstring as = (p && p->autoOn) ? wstring(TR(L"AutoSwitch: an", L"AutoSwitch: on")) : wstring(TR(L"AutoSwitch …", L"AutoSwitch …"));
+    SetDlgItemTextW(d, IDC_AUTOBTN, as.c_str());
+}
+
 static void edFill(HWND d, const Profile* p) {
     g_edLoading = true;
     g_changed.clear();
@@ -2163,6 +2791,7 @@ static void edFill(HWND d, const Profile* p) {
     ipSet(d, IDC_DNS1, (p && p->dns.size() > 0) ? &p->dns[0] : nullptr);
     ipSet(d, IDC_DNS2, (p && p->dns.size() > 1) ? &p->dns[1] : nullptr);
 
+    edExtraButtons(d, p);
     edUpdateEnable(d);
     g_edLoading = false;
 }
@@ -2345,6 +2974,27 @@ static void profileFromAdapter(const Adapter& a, Profile& p) {
         }
         if (p.dns.empty()) p.dns = a.dns;
     }
+    p.ip6mode = 0;
+    p.ips6.clear();
+    p.hasGw6 = false;
+    p.dns6.clear();
+    vector<Ip6> manual6;
+    bool global6 = false;
+    for (auto& x : a.ips6) {
+        if (x.manual && !x.linkLocal) manual6.push_back(x);
+        if (!x.linkLocal && !x.temp) global6 = true;
+    }
+    if (!manual6.empty()) {
+        p.ip6mode = 2;
+        p.ips6 = manual6;
+        if (!a.gws6.empty()) {
+            p.gw6 = a.gws6[0];
+            p.hasGw6 = true;
+        }
+        p.dns6 = a.dns6;
+    } else if (global6) {
+        p.ip6mode = 1;
+    }
 }
 
 static void edReadCurrent(HWND d) {
@@ -2394,8 +3044,11 @@ static void edApplyLang(HWND d) {
         {IDC_STATUSBTN, L"Netzwerkstatus", L"Network status"},
         {IDCANCEL, L"Schließen", L"Close"},
         {IDC_APPLY, L"Speichern", L"Save"},
+        {IDC_IMPORT, L"Importieren …", L"Import …"},
+        {IDC_EXPORT, L"Exportieren …", L"Export …"},
     };
     for (auto& x : t) SetDlgItemTextW(d, x.id, TR(x.de, x.en));
+    edExtraButtons(d, (g_edSel >= 0 && g_edSel < (int)g_ed.size()) ? &g_ed[g_edSel] : nullptr);
     edSetDirty(d, g_edDirty);
     g_fbKind = FB_NONE;
     InvalidateRect(GetDlgItem(d, IDC_FEEDBACK), nullptr, TRUE);
@@ -2467,6 +3120,8 @@ static void edDrawList(HWND d, DRAWITEMSTRUCT* di) {
     if (p) {
         RECT dr{r.left + S(36, dpi), r.top + S(19, dpi), cr.left - S(2, dpi), r.bottom - S(3, dpi)};
         wstring mode = profileDetail(*p);
+        if (p->ip6mode) mode += L" · IPv6";
+        if (p->autoOn) mode += L" · Auto";
         drawText(dc, mode, dr, C::Accent, g_eSmall, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         dr.left += textWidth(dc, mode, g_eSmall);
         drawText(dc, L" · " + p->adapter, dr, C::Sub, g_eSmall, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
@@ -2491,6 +3146,307 @@ static void edDrawFeedback(HWND d, DRAWITEMSTRUCT* di) {
 }
 
 static bool inFlash(int id) { return std::find(g_flash.begin(), g_flash.end(), id) != g_flash.end(); }
+
+static Profile* g_dlgProfile = nullptr;
+
+static void v6Texts(HWND d) {
+    SetWindowTextW(d, TR(L"IPv6-Einstellungen", L"IPv6 settings"));
+    struct { int id; const wchar_t *de, *en; } t[] = {
+        {IDC_V6_KEEP, L"IPv6 nicht ändern", L"Leave IPv6 unchanged"},
+        {IDC_V6_AUTO, L"IPv6 automatisch beziehen (Router-Advertisement / DHCPv6)", L"Obtain IPv6 automatically (router advertisement / DHCPv6)"},
+        {IDC_V6_STATIC, L"Folgende IPv6-Adressen verwenden:", L"Use the following IPv6 addresses:"},
+        {IDC_V6_LBL_ADDR, L"Adressen (eine pro Zeile, z. B. 2001:db8::10/64):", L"Addresses (one per line, e.g. 2001:db8::10/64):"},
+        {IDC_V6_LBL_GW, L"Standardgateway:", L"Default gateway:"},
+        {IDC_V6_LBL_DNS1, L"Bevorzugter DNS-Server:", L"Preferred DNS server:"},
+        {IDC_V6_LBL_DNS2, L"Alternativer DNS-Server:", L"Alternate DNS server:"},
+        {IDC_V6_HINT, L"DNS leer lassen = automatisch.", L"Leave DNS empty for automatic."},
+        {IDOK, L"OK", L"OK"},
+        {IDCANCEL, L"Abbrechen", L"Cancel"},
+    };
+    for (auto& x : t) SetDlgItemTextW(d, x.id, TR(x.de, x.en));
+}
+
+static void v6Enable(HWND d) {
+    bool st = IsDlgButtonChecked(d, IDC_V6_STATIC) == BST_CHECKED;
+    bool any = IsDlgButtonChecked(d, IDC_V6_KEEP) != BST_CHECKED;
+    for (int id : {IDC_V6_ADDR, IDC_V6_GW, IDC_V6_LBL_ADDR, IDC_V6_LBL_GW}) EnableWindow(GetDlgItem(d, id), st);
+    for (int id : {IDC_V6_DNS1, IDC_V6_DNS2, IDC_V6_LBL_DNS1, IDC_V6_LBL_DNS2, IDC_V6_HINT}) EnableWindow(GetDlgItem(d, id), any);
+}
+
+static bool v6Fail(HWND d, int focusId, const wstring& msg) {
+    MessageBoxW(d, msg.c_str(), L"MilleIpSwitch", MB_ICONWARNING);
+    SetFocus(GetDlgItem(d, focusId));
+    return false;
+}
+
+static bool v6Parse(HWND d, Profile& p) {
+    Profile q = p;
+    q.ip6mode = IsDlgButtonChecked(d, IDC_V6_STATIC) == BST_CHECKED ? 2 : IsDlgButtonChecked(d, IDC_V6_AUTO) == BST_CHECKED ? 1 : 0;
+    q.ips6.clear();
+    q.hasGw6 = false;
+    q.dns6.clear();
+    if (q.ip6mode == 2) {
+        wstring t = dlgText(d, IDC_V6_ADDR);
+        for (auto& c : t)
+            if (c == L'\r' || c == L'\n') c = L',';
+        for (auto& part : splitList(t)) {
+            Ip6 r;
+            wstring e;
+            if (!parseCidr6(part, r, e)) return v6Fail(d, IDC_V6_ADDR, e);
+            q.ips6.push_back(r);
+        }
+        if (q.ips6.empty()) return v6Fail(d, IDC_V6_ADDR, TR(L"Bitte mindestens eine IPv6-Adresse angeben.", L"Please enter at least one IPv6 address."));
+        wstring g = trim(dlgText(d, IDC_V6_GW));
+        if (!g.empty()) {
+            if (!parseIp6(g, q.gw6)) return v6Fail(d, IDC_V6_GW, TR(L"Ungültiges IPv6-Gateway.", L"Invalid IPv6 gateway."));
+            q.hasGw6 = true;
+        }
+    }
+    if (q.ip6mode != 0)
+        for (int id : {IDC_V6_DNS1, IDC_V6_DNS2}) {
+            wstring sv = trim(dlgText(d, id));
+            if (sv.empty()) continue;
+            IN6_ADDR a;
+            if (!parseIp6(sv, a)) return v6Fail(d, id, TR(L"Ungültiger IPv6-DNS-Server.", L"Invalid IPv6 DNS server."));
+            q.dns6.push_back(a);
+        }
+    p = q;
+    return true;
+}
+
+static INT_PTR CALLBACK v6Proc(HWND d, UINT msg, WPARAM wp, LPARAM) {
+    switch (msg) {
+    case WM_INITDIALOG: {
+        SendMessageW(d, WM_SETICON, ICON_SMALL, (LPARAM)g_iconWinSm);
+        SendMessageW(d, WM_SETICON, ICON_BIG, (LPARAM)g_iconWinBig);
+        v6Texts(d);
+        const Profile& p = *g_dlgProfile;
+        CheckRadioButton(d, IDC_V6_KEEP, IDC_V6_STATIC, IDC_V6_KEEP + p.ip6mode);
+        wstring addr;
+        for (size_t i = 0; i < p.ips6.size(); ++i) addr += (i ? L"\r\n" : L"") + cidr6Str(p.ips6[i]);
+        SetDlgItemTextW(d, IDC_V6_ADDR, addr.c_str());
+        SetDlgItemTextW(d, IDC_V6_GW, p.hasGw6 ? ip6Str(p.gw6).c_str() : L"");
+        SetDlgItemTextW(d, IDC_V6_DNS1, p.dns6.size() > 0 ? ip6Str(p.dns6[0]).c_str() : L"");
+        SetDlgItemTextW(d, IDC_V6_DNS2, p.dns6.size() > 1 ? ip6Str(p.dns6[1]).c_str() : L"");
+        v6Enable(d);
+        return TRUE;
+    }
+    case WM_COMMAND:
+        switch (LOWORD(wp)) {
+        case IDC_V6_KEEP:
+        case IDC_V6_AUTO:
+        case IDC_V6_STATIC:
+            if (HIWORD(wp) == BN_CLICKED) v6Enable(d);
+            return TRUE;
+        case IDOK:
+            if (v6Parse(d, *g_dlgProfile)) EndDialog(d, IDOK);
+            return TRUE;
+        case IDCANCEL:
+            EndDialog(d, IDCANCEL);
+            return TRUE;
+        }
+        break;
+    }
+    return FALSE;
+}
+
+static void asTexts(HWND d) {
+    SetWindowTextW(d, L"AutoSwitch");
+    struct { int id; const wchar_t *de, *en; } t[] = {
+        {IDC_AS_ENABLE, L"Dieses Profil automatisch aktivieren", L"Activate this profile automatically"},
+        {IDC_AS_INFO, L"Das Profil wird aktiviert, sobald der Adapter verbunden ist und alle angehakten Bedingungen zutreffen. Passen mehrere Profile desselben Adapters, gewinnt das oberste in der Liste. Nach einer manuellen Umschaltung pausiert AutoSwitch für diesen Adapter 10 Minuten. Gateway-MAC und Ping gelten für das aktuell verbundene Netz; die ARP-Prüfung findet auch Geräte in einem anderen Subnetz am selben Switch.", L"The profile is activated as soon as the adapter is connected and all checked conditions are met. If several profiles of the same adapter match, the topmost in the list wins. After a manual switch, AutoSwitch pauses for that adapter for 10 minutes. Gateway MAC and ping apply to the currently connected network; the ARP check also finds devices in a different subnet on the same switch."},
+        {IDC_AS_GRP, L"Bedingungen (zusätzlich zu „Adapter verbunden“)", L"Conditions (in addition to “adapter connected”)"},
+        {IDC_AS_MACCHK, L"Das Gateway hat die MAC-Adresse:", L"The gateway has the MAC address:"},
+        {IDC_AS_MACCUR, L"Aktuelle übernehmen", L"Use current"},
+        {IDC_AS_PINGCHK, L"Dieser Host antwortet auf Ping:", L"This host answers ping:"},
+        {IDC_AS_ARPCHK, L"Ein Gerät antwortet auf ARP (geht auch aus einem anderen Subnetz am selben Switch):", L"A device answers ARP (also works from a different subnet on the same switch):"},
+        {IDC_AS_ARPTEST, L"Testen", L"Test"},
+        {IDOK, L"OK", L"OK"},
+        {IDCANCEL, L"Abbrechen", L"Cancel"},
+    };
+    for (auto& x : t) SetDlgItemTextW(d, x.id, TR(x.de, x.en));
+}
+
+static void asEnable(HWND d) {
+    bool on = IsDlgButtonChecked(d, IDC_AS_ENABLE) == BST_CHECKED;
+    for (int id : {IDC_AS_GRP, IDC_AS_MACCHK, IDC_AS_PINGCHK, IDC_AS_MACCUR}) EnableWindow(GetDlgItem(d, id), on);
+    EnableWindow(GetDlgItem(d, IDC_AS_MAC), on && IsDlgButtonChecked(d, IDC_AS_MACCHK) == BST_CHECKED);
+    EnableWindow(GetDlgItem(d, IDC_AS_PING), on && IsDlgButtonChecked(d, IDC_AS_PINGCHK) == BST_CHECKED);
+    EnableWindow(GetDlgItem(d, IDC_AS_ARPCHK), on);
+    bool arp = on && IsDlgButtonChecked(d, IDC_AS_ARPCHK) == BST_CHECKED;
+    for (int id : {IDC_AS_ARPIP, IDC_AS_ARPMAC, IDC_AS_ARPTEST, IDC_AS_ARPL1, IDC_AS_ARPL2}) EnableWindow(GetDlgItem(d, id), arp);
+}
+
+static INT_PTR CALLBACK asProc(HWND d, UINT msg, WPARAM wp, LPARAM) {
+    switch (msg) {
+    case WM_INITDIALOG: {
+        SendMessageW(d, WM_SETICON, ICON_SMALL, (LPARAM)g_iconWinSm);
+        SendMessageW(d, WM_SETICON, ICON_BIG, (LPARAM)g_iconWinBig);
+        asTexts(d);
+        const Profile& p = *g_dlgProfile;
+        CheckDlgButton(d, IDC_AS_ENABLE, p.autoOn ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(d, IDC_AS_MACCHK, p.autoMac.empty() ? BST_UNCHECKED : BST_CHECKED);
+        CheckDlgButton(d, IDC_AS_PINGCHK, p.autoPing.empty() ? BST_UNCHECKED : BST_CHECKED);
+        SetDlgItemTextW(d, IDC_AS_MAC, p.autoMac.c_str());
+        SetDlgItemTextW(d, IDC_AS_PING, p.autoPing.c_str());
+        CheckDlgButton(d, IDC_AS_ARPCHK, p.autoArpIp.empty() ? BST_UNCHECKED : BST_CHECKED);
+        SetDlgItemTextW(d, IDC_AS_ARPIP, p.autoArpIp.c_str());
+        SetDlgItemTextW(d, IDC_AS_ARPMAC, p.autoArpMac.c_str());
+        asEnable(d);
+        return TRUE;
+    }
+    case WM_COMMAND:
+        switch (LOWORD(wp)) {
+        case IDC_AS_ENABLE:
+        case IDC_AS_MACCHK:
+        case IDC_AS_PINGCHK:
+        case IDC_AS_ARPCHK:
+            if (HIWORD(wp) == BN_CLICKED) asEnable(d);
+            return TRUE;
+        case IDC_AS_ARPTEST: {
+            IN_ADDR ip{};
+            vector<Adapter> ads = getAdapters();
+            const Adapter* a = findAdapter(ads, g_dlgProfile->adapter);
+            if (!parseIp(trim(dlgText(d, IDC_AS_ARPIP)), ip)) {
+                SetDlgItemTextW(d, IDC_AS_STATUS, TR(L"Bitte eine gültige IPv4-Adresse eingeben.", L"Please enter a valid IPv4 address."));
+                return TRUE;
+            }
+            wstring mac;
+            HCURSOR old = SetCursor(LoadCursorW(nullptr, IDC_WAIT));
+            bool ok = a && a->up && arpFresh(*a, ip.s_addr, mac);
+            SetCursor(old);
+            if (ok) {
+                if (trim(dlgText(d, IDC_AS_ARPMAC)).empty()) SetDlgItemTextW(d, IDC_AS_ARPMAC, mac.c_str());
+                SetDlgItemTextW(d, IDC_AS_STATUS, fmt(TR(L"Gerät antwortet: MAC %ls", L"Device answers: MAC %ls"), mac.c_str()).c_str());
+            } else {
+                SetDlgItemTextW(d, IDC_AS_STATUS, TR(L"Keine Antwort – Gerät am selben Switch und eingeschaltet?", L"No answer – is the device on the same switch and powered on?"));
+            }
+            return TRUE;
+        }
+        case IDC_AS_MACCUR: {
+            vector<Adapter> ads = getAdapters();
+            const Adapter* a = findAdapter(ads, g_dlgProfile->adapter);
+            wstring mac;
+            HCURSOR old = SetCursor(LoadCursorW(nullptr, IDC_WAIT));
+            bool ok = a && a->up && gatewayMac(*a, mac);
+            SetCursor(old);
+            if (ok) {
+                SetDlgItemTextW(d, IDC_AS_MAC, mac.c_str());
+                CheckDlgButton(d, IDC_AS_MACCHK, BST_CHECKED);
+                asEnable(d);
+                SetDlgItemTextW(d, IDC_AS_STATUS, fmt(TR(L"Gateway-MAC übernommen: %ls", L"Gateway MAC captured: %ls"), mac.c_str()).c_str());
+            } else {
+                SetDlgItemTextW(d, IDC_AS_STATUS, TR(L"Keine MAC ermittelt – Adapter verbunden und Gateway erreichbar?", L"No MAC found – is the adapter connected and the gateway reachable?"));
+            }
+            return TRUE;
+        }
+        case IDOK: {
+            Profile& p = *g_dlgProfile;
+            bool on = IsDlgButtonChecked(d, IDC_AS_ENABLE) == BST_CHECKED;
+            if (!on) {
+                p.autoOn = false;
+                EndDialog(d, IDOK);
+                return TRUE;
+            }
+            bool mc = IsDlgButtonChecked(d, IDC_AS_MACCHK) == BST_CHECKED;
+            bool pc = IsDlgButtonChecked(d, IDC_AS_PINGCHK) == BST_CHECKED;
+            wstring mac = normMac(dlgText(d, IDC_AS_MAC)), ping = trim(dlgText(d, IDC_AS_PING));
+            if (mc && mac.empty()) {
+                v6Fail(d, IDC_AS_MAC, TR(L"Bitte eine gültige MAC-Adresse eingeben (z. B. AA-BB-CC-DD-EE-FF).", L"Please enter a valid MAC address (e.g. AA-BB-CC-DD-EE-FF)."));
+                return TRUE;
+            }
+            if (pc && ping.empty()) {
+                v6Fail(d, IDC_AS_PING, TR(L"Bitte einen Host für den Ping angeben.", L"Please enter a host to ping."));
+                return TRUE;
+            }
+            p.autoOn = true;
+            p.autoMac = mc ? mac : L"";
+            p.autoPing = pc ? ping : L"";
+            bool ac = IsDlgButtonChecked(d, IDC_AS_ARPCHK) == BST_CHECKED;
+            wstring arpIp = trim(dlgText(d, IDC_AS_ARPIP)), arpMac = normMac(dlgText(d, IDC_AS_ARPMAC));
+            IN_ADDR tmpIp{};
+            if (ac && !parseIp(arpIp, tmpIp)) {
+                v6Fail(d, IDC_AS_ARPIP, TR(L"Bitte eine gültige IPv4-Adresse eingeben.", L"Please enter a valid IPv4 address."));
+                return TRUE;
+            }
+            p.autoArpIp = ac ? arpIp : L"";
+            p.autoArpMac = ac ? arpMac : L"";
+            EndDialog(d, IDOK);
+            return TRUE;
+        }
+        case IDCANCEL:
+            EndDialog(d, IDCANCEL);
+            return TRUE;
+        }
+        break;
+    }
+    return FALSE;
+}
+
+static bool pickIniFile(HWND owner, bool save, wstring& path) {
+    wchar_t buf[MAX_PATH] = L"";
+    if (save) lstrcpynW(buf, L"milleipswitch-profiles.ini", MAX_PATH);
+    wstring filter;
+    filter += TR(L"Profildateien (*.ini)", L"Profile files (*.ini)");
+    filter.push_back(L'\0');
+    filter += L"*.ini";
+    filter.push_back(L'\0');
+    filter += TR(L"Alle Dateien (*.*)", L"All files (*.*)");
+    filter.push_back(L'\0');
+    filter += L"*.*";
+    filter.push_back(L'\0');
+    OPENFILENAMEW o{};
+    o.lStructSize = sizeof(o);
+    o.hwndOwner = owner;
+    o.lpstrFilter = filter.c_str();
+    o.lpstrFile = buf;
+    o.nMaxFile = MAX_PATH;
+    o.lpstrDefExt = L"ini";
+    o.Flags = OFN_EXPLORER | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | (save ? OFN_OVERWRITEPROMPT : OFN_FILEMUSTEXIST);
+    BOOL ok = save ? GetSaveFileNameW(&o) : GetOpenFileNameW(&o);
+    if (ok) path = buf;
+    return ok != 0;
+}
+
+static void edExport(HWND d) {
+    if (!edCommit(d)) return;
+    wstring path, err;
+    if (!pickIniFile(d, true, path)) return;
+    if (writeProfilesTo(path, g_ed, err)) {
+        edFeedback(d, FB_OK, fmt(TR(L"%u Profile exportiert.", L"%u profiles exported."), (unsigned)g_ed.size()));
+    } else {
+        edFeedback(d, FB_ERR, firstLine(err));
+        MessageBoxW(d, err.c_str(), L"MilleIpSwitch", MB_ICONERROR);
+    }
+}
+
+static void edImport(HWND d) {
+    if (!edCommit(d)) return;
+    wstring path, err;
+    if (!pickIniFile(d, false, path)) return;
+    vector<Profile> in;
+    if (!loadProfilesFrom(path, in, err)) {
+        edFeedback(d, FB_ERR, firstLine(err));
+        MessageBoxW(d, err.c_str(), L"MilleIpSwitch", MB_ICONERROR);
+        return;
+    }
+    if (in.empty()) {
+        edFeedback(d, FB_INFO, TR(L"Keine Profile in dieser Datei gefunden.", L"No profiles found in this file."));
+        return;
+    }
+    int first = (int)g_ed.size();
+    for (auto& p : in) {
+        p.name = uniqueName(p.name);
+        g_ed.push_back(p);
+    }
+    g_edListChanged = true;
+    edRefreshList(d);
+    edSelect(d, first);
+    edSetDirty(d, true);
+    edFeedback(d, FB_INFO,
+               fmt(TR(L"%u Profile importiert – mit „Speichern“ übernehmen.", L"%u profiles imported – click “Save” to keep them."),
+                   (unsigned)in.size()));
+}
 
 static INT_PTR CALLBACK edProc(HWND d, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
@@ -2625,6 +3581,7 @@ static INT_PTR CALLBACK edProc(HWND d, UINT msg, WPARAM wp, LPARAM lp) {
             if (id == IDC_DUP && g_edSel >= 0) {
                 p = g_ed[g_edSel];
                 p.name = uniqueName(p.name + TR(L" (Kopie)", L" (copy)"));
+                p.autoOn = false;
             } else {
                 p.name = uniqueName(TR(L"Neues Profil", L"New profile"));
                 p.dhcp = true;
@@ -2732,6 +3689,28 @@ static INT_PTR CALLBACK edProc(HWND d, UINT msg, WPARAM wp, LPARAM lp) {
             break;
         case IDC_LANG:
             langPopup(GetDlgItem(d, IDC_LANG));
+            break;
+        case IDC_IMPORT:
+            edImport(d);
+            break;
+        case IDC_IPV6BTN:
+        case IDC_AUTOBTN:
+            if (g_edSel >= 0 && edCommit(d)) {
+                Profile tmp = g_ed[g_edSel];
+                g_dlgProfile = &tmp;
+                if (DialogBoxParamW(g_hInst, MAKEINTRESOURCEW(id == IDC_IPV6BTN ? IDD_IPV6 : IDD_AUTOSWITCH), d,
+                                    id == IDC_IPV6BTN ? v6Proc : asProc, 0) == IDOK) {
+                    g_ed[g_edSel] = tmp;
+                    g_changed.insert(id);
+                    edSetDirty(d, true);
+                    edExtraButtons(d, &g_ed[g_edSel]);
+                    InvalidateRect(GetDlgItem(d, IDC_LIST), nullptr, FALSE);
+                }
+                g_dlgProfile = nullptr;
+            }
+            break;
+        case IDC_EXPORT:
+            edExport(d);
             break;
         case IDC_APPLY:
             edSave(d);
@@ -2872,7 +3851,7 @@ static vector<PopRow> g_pRows;
 
 static int popRowHeight(const PopRow& r) {
     UINT d = g_pDpi;
-    return S(28, d) + S(18, d) + S(22, d) + (int)r.rows.size() * S(17, d) + (r.profile.empty() ? 0 : S(20, d)) + S(8, d);
+    return S(38, d) + S(18, d) + S(22, d) + (int)r.rows.size() * S(17, d) + (r.profile.empty() ? 0 : S(20, d)) + S(8, d);
 }
 
 static int popHeight() {
@@ -2905,25 +3884,30 @@ static void popPaint(HDC dc, RECT rc) {
         int h = popRowHeight(r);
         fillRound(dc, RECT{x0, y, x1, y + h}, s(10), C::Card, C::Border);
 
-        RECT hb{x0, y, x1, y + s(28)};
+        RECT hb{x0, y, x1, y + s(38)};
         COLORREF hbg = a->up ? C::AccentBg : C::GreyBg;
         fillRound(dc, hb, s(10), hbg, hbg);
         fillRect(dc, RECT{hb.left, hb.bottom - s(6), hb.right, hb.bottom}, hbg);
-        drawGlyph(dc, kindGlyph(a->kind, a->bluetooth), RECT{x0 + s(6), y, x0 + s(30), y + s(28)},
+        drawGlyph(dc, kindGlyph(a->kind, a->bluetooth), RECT{x0 + s(6), y, x0 + s(30), y + s(38)},
                   a->up ? C::Accent : C::Faint, g_pGlyph);
-        fillCircle(dc, x1 - s(14), y + s(14), s(5), a->up ? C::Green : C::Faint);
+        fillCircle(dc, x1 - s(14), y + s(19), s(5), a->up ? C::Green : C::Faint);
         int nameL = x0 + s(34), nameR = x1 - s(26);
         wstring off = a->up ? L"" : wstring(L"(") + TR(L"Getrennt", L"Disconnected") + L")";
         int offW = off.empty() ? 0 : textWidth(dc, off, g_pSmall) + s(6);
-        drawText(dc, a->friendly, RECT{nameL, y, nameR - offW, y + s(28)}, a->up ? C::Text : C::Sub, g_pBold,
+        int nameT = a->hasMetric ? y + s(3) : y, nameB = a->hasMetric ? y + s(21) : y + s(38);
+        drawText(dc, a->friendly, RECT{nameL, nameT, nameR - offW, nameB}, a->up ? C::Text : C::Sub, g_pBold,
                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         if (!off.empty()) {
             int nw = std::min(textWidth(dc, a->friendly, g_pBold), nameR - offW - nameL);
-            drawText(dc, off, RECT{nameL + nw + s(6), y, nameR, y + s(28)}, C::Faint, g_pSmall,
+            drawText(dc, off, RECT{nameL + nw + s(6), nameT, nameR, nameB}, C::Faint, g_pSmall,
                      DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         }
+        if (a->hasMetric)
+            drawText(dc, TR(L"Schnittstellenmetrik", L"Interface metric") + wstring(L" ") + metricText(*a),
+                     RECT{nameL, y + s(20), nameR, y + s(36)}, C::Sub, g_pSmall,
+                     DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
-        int bx = x0 + s(10), br = x1 - s(10), by = y + s(30);
+        int bx = x0 + s(10), br = x1 - s(10), by = y + s(40);
         drawText(dc, a->desc, RECT{bx, by, br, by + s(18)}, C::Sub, g_pSmall,
                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         by += s(18);
@@ -3024,6 +4008,11 @@ static void showPopup() {
                 r.rows.push_back({first ? L"IP" : L"", cidrStr(x)});
                 first = false;
             }
+            for (auto& x : a.ips6)
+                if (!x.linkLocal && !x.temp) {
+                    r.rows.push_back({L"IPv6", ip6Str(x.addr)});
+                    break;
+                }
             if (!a.gws.empty()) r.rows.push_back({L"Gateway", ipStr(a.gws[0])});
             wstring dns;
             for (size_t i = 0; i < a.dns.size(); ++i) dns += (i ? L", " : L"") + ipStr(a.dns[i]);
@@ -3092,7 +4081,7 @@ struct MenuEntry {
     COLORREF glyphColor = C::Accent, detailColor = C::Faint;
 };
 static vector<MenuEntry> g_menu;
-static HFONT g_mFont, g_mBold, g_mSmall, g_mGlyph, g_mHeader;
+static HFONT g_mFont, g_mBold, g_mSmall, g_mGlyph, g_mHeader, g_mTitle;
 static UINT g_mDpi = 96;
 static int g_mPillW = 0, g_mDetailW = 0;
 
@@ -3100,17 +4089,18 @@ static void menuMeasure(MEASUREITEMSTRUCT* mi) {
     const MenuEntry& e = g_menu[mi->itemData];
     UINT d = g_mDpi;
     HDC dc = GetDC(g_hwnd);
-    int w = S(30, d) + textWidth(dc, e.text, (e.header || e.section) ? g_mHeader : g_mBold) + S(16, d);
+    int w = S(30, d) + textWidth(dc, e.text, e.header ? g_mTitle : e.section ? g_mHeader : g_mBold) + S(16, d);
     if (!e.pill.empty())
         w += g_mPillW + S(8, d) + g_mDetailW + S(8, d);
     else if (!e.detail.empty())
         w += textWidth(dc, e.detail, g_mSmall) + S(10, d);
-    if (e.glyph || e.flag >= 0) w += S(26, d);
+    if (e.header) w += S(32, d);
+    else if (e.glyph || e.flag >= 0) w += S(26, d);
     if (e.popup) w += S(14, d);
     if (e.inBox || e.section) w += S(12, d);
     ReleaseDC(g_hwnd, dc);
     mi->itemWidth = std::max(w, S(190, d));
-    mi->itemHeight = S(e.header ? 32 : e.section ? 30 : 26, d) + (e.boxLast ? S(6, d) : 0);
+    mi->itemHeight = S(e.header ? 46 : e.section ? 30 : 26, d) + (e.boxLast ? S(6, d) : 0);
 }
 
 static void menuDraw(DRAWITEMSTRUCT* di) {
@@ -3156,12 +4146,14 @@ static void menuDraw(DRAWITEMSTRUCT* di) {
         fillRound(dc, hr, S(6, d), bg, bg);
     }
     if (e.header) {
-        int is = S(22, d);
-        RECT gr{r.left + S(5, d), r.top, r.left + S(5, d) + is, r.bottom};
+        int is = S(32, d);
+        RECT gr{r.left + S(8, d), r.top, r.left + S(8, d) + is, r.bottom};
         if (g_iconMenu) DrawIconEx(dc, gr.left, (r.top + r.bottom - is) / 2, g_iconMenu, is, is, 0, nullptr, DI_NORMAL);
-        RECT tr{gr.right + S(6, d), r.top, r.right - S(10, d), r.bottom};
-        drawText(dc, e.text, tr, C::Text, g_mHeader, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-        drawText(dc, e.detail, tr, C::Faint, g_mSmall, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+        int tx = gr.right + S(8, d);
+        drawText(dc, e.text, RECT{tx, r.top + S(5, d), r.right - S(10, d), r.top + S(26, d)}, C::Text, g_mTitle,
+                 DT_LEFT | DT_BOTTOM | DT_SINGLELINE);
+        drawText(dc, e.detail, RECT{tx, r.top + S(26, d), r.right - S(10, d), r.bottom - S(4, d)}, C::Faint, g_mSmall,
+                 DT_LEFT | DT_TOP | DT_SINGLELINE);
         return;
     }
     if (e.check) {
@@ -3201,14 +4193,15 @@ static void menuDraw(DRAWITEMSTRUCT* di) {
 
 static void menuFonts() {
     g_mDpi = dpiOf(g_hwnd);
-    for (HFONT* f : {&g_mFont, &g_mBold, &g_mSmall, &g_mGlyph, &g_mHeader}) delFont(*f);
+    for (HFONT* f : {&g_mFont, &g_mBold, &g_mSmall, &g_mGlyph, &g_mHeader, &g_mTitle}) delFont(*f);
     g_mFont = mkFont(L"Segoe UI", 90, 400, g_mDpi);
     g_mBold = mkFont(L"Segoe UI", 90, 600, g_mDpi);
     g_mHeader = mkFont(L"Segoe UI", 95, 600, g_mDpi);
+    g_mTitle = mkFont(L"Segoe UI", 120, 600, g_mDpi);
     g_mSmall = mkFont(L"Segoe UI", 80, 400, g_mDpi);
     g_mGlyph = mkFont(glyphFace(), 105, 400, g_mDpi);
     if (g_iconMenu) DestroyIcon(g_iconMenu);
-    g_iconMenu = (HICON)LoadImageW(g_hInst, MAKEINTRESOURCEW(IDI_DETAIL), IMAGE_ICON, S(22, g_mDpi), S(22, g_mDpi), 0);
+    g_iconMenu = (HICON)LoadImageW(g_hInst, MAKEINTRESOURCEW(IDI_DETAIL), IMAGE_ICON, S(32, g_mDpi), S(32, g_mDpi), 0);
 }
 
 static void edApplyLang(HWND d);
@@ -3346,6 +4339,56 @@ static void showMenu() {
         le.check = g_lang == l;
         addTo(langMenu, MF_STRING, ID_LANG0 + l, le);
     }
+    MenuEntry asw;
+    asw.text = L"AutoSwitch";
+    asw.glyph = 0xE945;
+    asw.glyphColor = C::Sub;
+    asw.check = g_autoEnabled;
+    int nAuto = 0;
+    for (auto& pr : g_profiles) nAuto += pr.autoOn ? 1 : 0;
+    if (nAuto) asw.detail = fmt(TR(L"%d Profile", L"%d profiles"), nAuto);
+    {
+        DWORD now = GetTickCount();
+        LONG left = 0;
+        for (auto& pr : g_profiles) {
+            if (!pr.autoOn) continue;
+            auto it = g_autoHold.find(lower(pr.adapter));
+            if (it != g_autoHold.end()) left = std::max(left, (LONG)(it->second - now));
+        }
+        if (g_autoEnabled && left > 0)
+            asw.detail = fmt(TR(L"pausiert %d min", L"paused %d min"), (int)((left + 59999) / 60000));
+    }
+    add(MF_STRING, ID_AUTOSW, asw);
+
+    HMENU updMenu = CreatePopupMenu();
+    bool haveUpd = !g_updateTag.empty();
+    if (haveUpd) {
+        MenuEntry ue;
+        ue.text = fmt(TR(L"Download %ls …", L"Download %ls …"), g_updateTag.c_str());
+        ue.glyph = 0xE896;
+        ue.glyphColor = C::Green;
+        addTo(updMenu, MF_STRING, ID_UPD_OPEN, ue);
+    }
+    MenuEntry uc;
+    uc.text = TR(L"Jetzt nach Updates suchen", L"Check for updates now");
+    uc.glyph = 0xE895;
+    uc.glyphColor = C::Sub;
+    addTo(updMenu, MF_STRING, ID_UPD_CHECK, uc);
+    MenuEntry ua;
+    ua.text = TR(L"Automatisch suchen", L"Check automatically");
+    ua.check = g_updateAuto;
+    addTo(updMenu, MF_STRING, ID_UPD_AUTO, ua);
+    MenuEntry um;
+    um.text = TR(L"Updates", L"Updates");
+    um.popup = true;
+    um.glyph = haveUpd ? 0xE896 : 0xE895;
+    um.glyphColor = haveUpd ? C::Green : C::Sub;
+    if (haveUpd) {
+        um.detail = g_updateTag;
+        um.detailColor = C::Green;
+    }
+    addTo(m, MF_POPUP, (UINT_PTR)updMenu, um);
+
     MenuEntry lg;
     lg.text = TR(L"Sprache", L"Language");
     lg.flag = g_lang;
@@ -3376,6 +4419,18 @@ static void showMenu() {
         openStatus();
     else if (cmd == ID_AUTOSTART)
         setAutostart(!g_autostart, nullptr);
+    else if (cmd == ID_AUTOSW) {
+        g_autoEnabled = !g_autoEnabled;
+        regSetDword(L"AutoSwitchOff", g_autoEnabled ? 0 : 1);
+        g_autoHold.clear();
+    } else if (cmd == ID_UPD_OPEN)
+        openUpdatePage();
+    else if (cmd == ID_UPD_CHECK)
+        startUpdateCheck(true);
+    else if (cmd == ID_UPD_AUTO) {
+        g_updateAuto = !g_updateAuto;
+        regSetDword(L"UpdateCheckOff", g_updateAuto ? 0 : 1);
+    }
     else if (cmd >= ID_LANG0 && cmd < ID_LANG0 + LANG_COUNT)
         setLanguage((int)(cmd - ID_LANG0));
     else if (cmd == ID_EXIT) {
@@ -3389,11 +4444,160 @@ static void showMenu() {
 }
 
 static void applyFinished(bool ok, const wstring& msg) {
-    trayBalloon(ok ? TR(L"Profil gewechselt", L"Profile switched") : TR(L"Fehler beim Umschalten", L"Switching failed"), msg, !ok);
+    int kind = g_applyKind;
+    g_applyKind = 0;
+    if (!(kind == 2 && ok))
+        trayBalloon(ok ? (kind == 1 ? TR(L"AutoSwitch: Profil gewechselt", L"AutoSwitch: profile switched")
+                                    : TR(L"Profil gewechselt", L"Profile switched"))
+                       : TR(L"Fehler beim Umschalten", L"Switching failed"),
+                    msg, !ok);
     if (g_hDlg) edApplied(g_hDlg, ok, msg);
     if (g_hStatus) {
         g_stAds = getAdapters(true);
         InvalidateRect(g_hStatus, nullptr, FALSE);
+    }
+    if (!g_restoreQueue.empty()) {
+        Profile next = g_restoreQueue.front();
+        g_restoreQueue.erase(g_restoreQueue.begin());
+        startApply(next, 2);
+    }
+}
+
+static void restoreLast() {
+    HKEY k;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\MilleIpSwitch\\Last", 0, KEY_READ, &k) != ERROR_SUCCESS) return;
+    vector<Adapter> ads = getAdapters();
+    for (DWORD i = 0;; ++i) {
+        wchar_t nm[256], val[256];
+        DWORD nl = 256, vl = sizeof(val) - sizeof(wchar_t), type = 0;
+        memset(val, 0, sizeof(val));
+        if (RegEnumValueW(k, i, nm, &nl, nullptr, &type, (BYTE*)val, &vl) != ERROR_SUCCESS) break;
+        if (type != REG_SZ) continue;
+        for (auto& p : g_profiles)
+            if (p.ip6mode == 2 && ieq(p.adapter, nm) && ieq(p.name, val) && !isActive(p, ads)) {
+                g_restoreQueue.push_back(p);
+                break;
+            }
+    }
+    RegCloseKey(k);
+    if (!g_restoreQueue.empty()) {
+        Profile next = g_restoreQueue.front();
+        g_restoreQueue.erase(g_restoreQueue.begin());
+        if (!startApply(next, 2)) g_restoreQueue.clear();
+    }
+}
+
+#define TIMER_AUTO 11
+#define TIMER_RESTORE 12
+#define WM_AUTODONE (WM_APP + 6)
+
+struct AutoJob {
+    vector<Profile> ps;
+};
+struct AutoResult {
+    vector<wstring> names, adapters;
+    vector<char> match, active, up;
+};
+struct AutoState {
+    wstring wanted;
+    int cnt = 0;
+    DWORD last = 0;
+};
+static std::map<wstring, AutoState> g_autoState;
+static std::map<wstring, bool> g_wasUp;
+static bool g_autoBusy = false;
+
+static DWORD WINAPI autoWorker(LPVOID arg) {
+    AutoJob* job = (AutoJob*)arg;
+    vector<Adapter> ads = getAdapters();
+    auto* r = new AutoResult;
+    for (auto& pr : job->ps) {
+        bool m = false;
+        const Adapter* a = findAdapter(ads, pr.adapter);
+        if (a && a->up) {
+            m = true;
+            if (!pr.autoMac.empty()) {
+                wstring mac;
+                m = gatewayMac(*a, mac) && mac == pr.autoMac;
+            }
+            if (m && !pr.autoPing.empty()) m = pingHost(pr.autoPing);
+            if (m && !pr.autoArpIp.empty()) {
+                IN_ADDR ip{};
+                wstring mac;
+                m = parseIp(pr.autoArpIp, ip) && arpFresh(*a, ip.s_addr, mac) && (pr.autoArpMac.empty() || mac == pr.autoArpMac);
+            }
+        }
+        r->names.push_back(pr.name);
+        r->adapters.push_back(pr.adapter);
+        r->match.push_back(m);
+        r->active.push_back(isActive(pr, ads));
+        r->up.push_back(a && a->up);
+    }
+    delete job;
+    PostMessageW(g_hwnd, WM_AUTODONE, 0, (LPARAM)r);
+    return 0;
+}
+
+static void autoTick() {
+    if (!g_autoEnabled || g_autoBusy || g_busy) return;
+    AutoJob* job = new AutoJob;
+    for (auto& p : g_profiles)
+        if (p.autoOn) job->ps.push_back(p);
+    if (job->ps.empty()) {
+        delete job;
+        return;
+    }
+    g_autoBusy = true;
+    HANDLE h = CreateThread(nullptr, 0, autoWorker, job, 0, nullptr);
+    if (h) {
+        CloseHandle(h);
+    } else {
+        delete job;
+        g_autoBusy = false;
+    }
+}
+
+static void autoDecide(AutoResult* r) {
+    DWORD now = GetTickCount();
+    std::set<wstring> done;
+    for (size_t i = 0; i < r->names.size(); ++i) {
+        wstring key = lower(r->adapters[i]);
+        if (!done.insert(key).second) continue;
+        AutoState& st = g_autoState[key];
+        bool& was = g_wasUp[key];
+        if (r->up[i] && !was) g_autoHold.erase(key);
+        was = r->up[i] != 0;
+        auto hold = g_autoHold.find(key);
+        if (hold != g_autoHold.end() && (LONG)(hold->second - now) > 0) {
+            st.wanted.clear();
+            st.cnt = 0;
+            continue;
+        }
+        int w = -1;
+        for (size_t j = i; j < r->names.size(); ++j)
+            if (lower(r->adapters[j]) == key && r->match[j]) {
+                w = (int)j;
+                break;
+            }
+        if (w < 0 || r->active[w]) {
+            st.wanted.clear();
+            st.cnt = 0;
+            continue;
+        }
+        if (st.wanted == r->names[w]) {
+            ++st.cnt;
+        } else {
+            st.wanted = r->names[w];
+            st.cnt = 1;
+        }
+        if (st.cnt < 2 || (st.last && (LONG)(now - st.last) < 30000) || g_busy) continue;
+        for (auto& p : g_profiles)
+            if (p.name == st.wanted && p.autoOn && startApply(p, 1)) {
+                st.last = now;
+                st.cnt = 0;
+                st.wanted.clear();
+                break;
+            }
     }
 }
 
@@ -3401,6 +4605,10 @@ static LRESULT CALLBACK wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_TRAY:
         switch (LOWORD(lp)) {
+        case NIN_BALLOONUSERCLICK:
+            if (g_balloonUpdate) openUpdatePage();
+            g_balloonUpdate = false;
+            break;
         case NIN_POPUPOPEN: showPopup(); break;
         case NIN_POPUPCLOSE: hidePopup(); break;
         case NIN_SELECT:
@@ -3432,6 +4640,25 @@ static LRESULT CALLBACK wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_TIMER:
         if (wp == TIMER_TRAYCHECK) trayEnsure();
+        else if (wp == TIMER_UPDATE) {
+            KillTimer(h, TIMER_UPDATE);
+            if (g_updateAuto && regFlag(L"LastUpdateCheck") != todayDays()) startUpdateCheck(false);
+        } else if (wp == TIMER_AUTO) {
+            autoTick();
+        } else if (wp == TIMER_RESTORE) {
+            KillTimer(h, TIMER_RESTORE);
+            restoreLast();
+        }
+        return 0;
+    case WM_AUTODONE: {
+        auto* ar = (AutoResult*)lp;
+        g_autoBusy = false;
+        if (g_autoEnabled) autoDecide(ar);
+        delete ar;
+        return 0;
+    }
+    case WM_UPDATEDONE:
+        updateFinished((UpdateResult*)lp);
         return 0;
     case WM_FIRSTRUN:
         firstRunHint();
@@ -3450,6 +4677,7 @@ static LRESULT CALLBACK wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         reloadProfiles(false);
         const Profile* p = findProfile(g_profiles, name);
         if (!p) return 100 + RC_UNKNOWN;
+        g_autoHold[lower(p->adapter)] = GetTickCount() + 600000;
         if (InterlockedCompareExchange(&g_busy, 1, 0) != 0) return 100 + RC_BUSY;
         wstring m;
         bool ok = applyProfile(*p, m);
@@ -3516,6 +4744,11 @@ static int runTray(bool showWindow) {
     reloadProfiles(true);
     trayAdd();
     SetTimer(g_hwnd, TIMER_TRAYCHECK, 3000, nullptr);
+    g_autoEnabled = !regFlag(L"AutoSwitchOff");
+    SetTimer(g_hwnd, TIMER_AUTO, 5000, nullptr);
+    SetTimer(g_hwnd, TIMER_RESTORE, 12000, nullptr);
+    g_updateAuto = !regFlag(L"UpdateCheckOff");
+    if (g_updateAuto) SetTimer(g_hwnd, TIMER_UPDATE, 15000, nullptr);
     g_autostart = taskExists();
     bool firstRun = !regFlag(L"FirstRunDone");
     if (showWindow || firstRun || g_profiles.empty()) openEditor();
@@ -3627,6 +4860,8 @@ static int runCli(const wstring& arg) {
 int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
     g_hInst = hInst;
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    WSADATA wsd;
+    WSAStartup(MAKEWORD(2, 2), &wsd);
     {
         DWORD v = 0, sz = sizeof(v);
         RegGetValueW(HKEY_CURRENT_USER, L"Software\\MilleIpSwitch", L"Language", RRF_RT_REG_DWORD, nullptr, &v, &sz);
@@ -3635,7 +4870,20 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
     wchar_t exe[MAX_PATH];
     GetModuleFileNameW(nullptr, exe, MAX_PATH);
     g_exePath = exe;
-    g_iniPath = g_exePath.substr(0, g_exePath.find_last_of(L'\\')) + L"\\profiles.ini";
+    {
+        wstring dir = g_exePath.substr(0, g_exePath.find_last_of(L'\\'));
+        g_iniPath = dir + L"\\profiles.ini";
+        if (GetFileAttributesW(g_iniPath.c_str()) == INVALID_FILE_ATTRIBUTES &&
+            GetFileAttributesW((dir + L"\\portable").c_str()) == INVALID_FILE_ATTRIBUTES) {
+            PWSTR appData = nullptr;
+            if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &appData))) {
+                wstring d2 = wstring(appData) + L"\\MilleIpSwitch";
+                CoTaskMemFree(appData);
+                CreateDirectoryW(d2.c_str(), nullptr);
+                g_iniPath = d2 + L"\\profiles.ini";
+            }
+        }
+    }
 
     int argc = 0;
     wchar_t** argv = CommandLineToArgvW(GetCommandLineW(), &argc);

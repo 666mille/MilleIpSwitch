@@ -1,6 +1,7 @@
-# Build output
 build/
 out/
+dist/
+backups/
 *.exe
 *.obj
 *.o
@@ -8,12 +9,12 @@ out/
 *.pdb
 *.ilk
 
-# Local profile data (written next to the exe)
+# Local profile data
 profiles.ini
 profiles.ini.bak
 profiles.ini.tmp
+portable
 
-# Editors
 .vs/
 .vscode/
 *.user
