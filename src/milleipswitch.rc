@@ -104,3 +104,30 @@ BEGIN
     DEFPUSHBUTTON   "OK", IDOK, 184, 238, 52, 14
     PUSHBUTTON      "Abbrechen", IDCANCEL, 240, 238, 50, 14
 END
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION 1,1,1,0
+ PRODUCTVERSION 1,1,1,0
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_APP
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName", "666mille"
+            VALUE "FileDescription", "MilleIpSwitch – network profile switcher"
+            VALUE "FileVersion", "1.1.1"
+            VALUE "InternalName", "milleipswitch"
+            VALUE "LegalCopyright", "Copyright (c) 2026 Holger (666mille), MIT License"
+            VALUE "OriginalFilename", "milleipswitch.exe"
+            VALUE "ProductName", "MilleIpSwitch"
+            VALUE "ProductVersion", "1.1.1"
+            VALUE "Comments", "https://github.com/666mille/MilleIpSwitch"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END

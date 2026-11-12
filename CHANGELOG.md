@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.1
+- Security: the update page opens in the normal (non-elevated) browser
+- Security: warning when enabling autostart from a folder that non-admin programs can modify
+- Network status: device list for disabled adapters is cached (less load every 3 seconds)
+- Update check uses automatic proxy detection
+- Built-in self-test (`--selftest`), run on every build
+- Small fixes in the profile manager
+- Restore version information in the file properties (missing in 1.1.0)
+
 ## 1.1.0
 - AutoSwitch: activate profiles automatically (adapter connected, gateway MAC, ping, ARP)
 - IPv6 per profile: automatic or static addresses, gateway and DNS

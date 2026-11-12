@@ -49,7 +49,7 @@ using std::wstring;
 static HINSTANCE g_hInst;
 static wstring g_exePath, g_iniPath;
 
-#define NS_VERSION L"1.1.0"
+#define NS_VERSION L"1.1.1"
 static int g_lang = 0;
 enum { LANG_COUNT = 4 };
 static const wchar_t* trLookup(const wchar_t* en);
@@ -61,6 +61,8 @@ static inline const wchar_t* TR(const wchar_t* de, const wchar_t* en) {
 // Spanish / French strings, keyed by the English text
 struct TrEntry { const wchar_t *en, *es, *fr; };
 static const TrEntry kTr[] = {
+    {L"New profile created – choose an adapter and click “Save”.", L"Perfil nuevo creado: elige un adaptador y pulsa «Guardar».", L"Nouveau profil créé – choisissez une carte puis cliquez sur « Enregistrer »."},
+    {L"MilleIpSwitch is located in a folder that programs without administrator rights can modify:\n%ls\n\nAutostart runs with administrator rights. Another program could replace the exe and gain administrator rights that way. It is safer to move the exe to “C:\\Program Files\\MilleIpSwitch” and enable autostart there.\n\nEnable autostart here anyway?", L"MilleIpSwitch está en una carpeta que los programas sin derechos de administrador pueden modificar:\n%ls\n\nEl inicio automático se ejecuta con derechos de administrador. Otro programa podría sustituir el exe y obtener así derechos de administrador. Es más seguro mover el exe a «C:\\Program Files\\MilleIpSwitch» y activar allí el inicio automático.\n\n¿Activar el inicio automático aquí de todos modos?", L"MilleIpSwitch se trouve dans un dossier que des programmes sans droits d’administrateur peuvent modifier :\n%ls\n\nLe démarrage automatique s’exécute avec les droits d’administrateur. Un autre programme pourrait remplacer l’exe et obtenir ainsi ces droits. Il est plus sûr de déplacer l’exe vers « C:\\Program Files\\MilleIpSwitch » et d’y activer le démarrage automatique.\n\nActiver quand même le démarrage automatique ici ?"},
     {L"paused %d min", L"en pausa %d min", L"en pause %d min"},
     {L"A device answers ARP (also works from a different subnet on the same switch):", L"Un dispositivo responde a ARP (también desde otra subred en el mismo switch):", L"Un appareil répond à ARP (fonctionne aussi depuis un autre sous-réseau sur le même switch) :"},
     {L"Test", L"Probar", L"Tester"},
@@ -357,9 +359,23 @@ static bool parseIp(const wstring& s, IN_ADDR& a) {
     return InetPtonW(AF_INET, s.c_str(), &a) == 1;
 }
 
+static bool maskToPrefix(ULONG maskNet, UINT8& len) {
+    ULONG m = ntohl(maskNet);
+    UINT8 n = 0;
+    while (n < 32 && (m & 0x80000000u)) {
+        m <<= 1;
+        ++n;
+    }
+    if (m != 0) return false;
+    len = n;
+    return true;
+}
+
+static ULONG prefixToMask(UINT8 len) { return len == 0 ? 0 : htonl(0xFFFFFFFFu << (32 - (len > 32 ? 32 : len))); }
+
 static wstring maskStr(UINT8 len) {
     ULONG m = 0;
-    ConvertLengthToIpv4Mask(len, &m);
+    m = prefixToMask(len);
     IN_ADDR a;
     a.s_addr = m;
     return ipStr(a);
@@ -461,7 +477,7 @@ static bool parseCidr(const wstring& s, Ip4& r, wstring& err) {
     if (pre.find(L'.') != wstring::npos) {
         IN_ADDR m;
         UINT8 len = 0;
-        if (!parseIp(pre, m) || ConvertIpv4MaskToLength(m.s_addr, &len) != NO_ERROR) {
+        if (!parseIp(pre, m) || !maskToPrefix(m.s_addr, len)) {
             err = TR(L"Ungültige Subnetzmaske: ", L"Invalid subnet mask: ") + s;
             return false;
         }
@@ -871,6 +887,9 @@ static bool setAdapterEnabled(const string& guidStr, bool enable) {
     return ok;
 }
 
+static vector<Adapter> g_disabledCache;
+static DWORD g_disabledStamp = 0;
+
 static vector<Adapter> getAdapters(bool withDisabled);
 static vector<Adapter> getAdapters() { return getAdapters(false); }
 
@@ -953,7 +972,20 @@ static vector<Adapter> getAdapters(bool withDisabled) {
         }
         r.push_back(d);
     }
-    if (withDisabled) appendDisabledAdapters(r);
+    if (withDisabled) {
+        DWORD now = GetTickCount();
+        if (!g_disabledStamp || now - g_disabledStamp > 10000) {
+            g_disabledCache.clear();
+            appendDisabledAdapters(g_disabledCache);
+            g_disabledStamp = now ? now : 1;
+        }
+        for (auto& dis : g_disabledCache) {
+            bool dup = false;
+            for (auto& x : r)
+                if (x.guidStr == dis.guidStr) dup = true;
+            if (!dup) r.push_back(dis);
+        }
+    }
     return r;
 }
 
@@ -1226,7 +1258,7 @@ static bool applyDns(const Adapter& a, const Profile& p, wstring& log) {
         DnsIfSettings s{};
         s.Version = 1;
         s.Flags = 0x0002;
-        s.NameServer = &list[0];
+        s.NameServer = list.data();
         DWORD e = fn(a.guid, &s);
         if (e == NO_ERROR) return true;
         log += fmt(L"SetInterfaceDnsSettings: Fehler %lu, versuche netsh\n", e);
@@ -1349,7 +1381,7 @@ static bool applyIpv6(const Adapter& a, const Profile& p, wstring& log) {
         DnsIfSettings sd{};
         sd.Version = 1;
         sd.Flags = 0x0003;
-        sd.NameServer = &list[0];
+        sd.NameServer = list.data();
         DWORD e = fn(a.guid, &sd);
         if (e != NO_ERROR) {
             log += fmt(L"IPv6 DNS: error %lu\n", e);
@@ -1456,8 +1488,8 @@ static wstring xmlEsc(const wstring& s) {
 
 static bool flushDns() {
     typedef BOOL(WINAPI * PFN)();
-    HMODULE m = LoadLibraryW(L"dnsapi.dll");
-    PFN f = m ? (PFN)(void*)GetProcAddress(m, "DnsFlushResolverCache") : nullptr;
+    static HMODULE m = LoadLibraryW(L"dnsapi.dll");
+    static PFN f = m ? (PFN)(void*)GetProcAddress(m, "DnsFlushResolverCache") : nullptr;
     return f && f();
 }
 
@@ -1904,8 +1936,10 @@ static bool isNewerVersion(const wstring& tag) {
 static string httpsGet(const wchar_t* host, const wchar_t* path, DWORD& status) {
     string body;
     status = 0;
-    HINTERNET ses = WinHttpOpen(L"MilleIpSwitch/" NS_VERSION, WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME,
-                                WINHTTP_NO_PROXY_BYPASS, 0);
+    HINTERNET ses = WinHttpOpen(L"MilleIpSwitch/" NS_VERSION, 4, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!ses)
+        ses = WinHttpOpen(L"MilleIpSwitch/" NS_VERSION, WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME,
+                          WINHTTP_NO_PROXY_BYPASS, 0);
     if (!ses) return body;
     WinHttpSetTimeouts(ses, 5000, 5000, 8000, 8000);
     HINTERNET con = WinHttpConnect(ses, host, INTERNET_DEFAULT_HTTPS_PORT, 0);
@@ -1969,8 +2003,9 @@ static void startUpdateCheck(bool manual) {
 }
 
 static void openUpdatePage() {
-    if (g_updateUrl.rfind(L"https://github.com/666mille/MilleIpSwitch/", 0) == 0)
-        ShellExecuteW(nullptr, L"open", g_updateUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    if (g_updateUrl.rfind(L"https://github.com/666mille/MilleIpSwitch/", 0) != 0) return;
+    wstring arg = L"\"" + g_updateUrl + L"\"";
+    ShellExecuteW(nullptr, L"open", L"explorer.exe", arg.c_str(), nullptr, SW_SHOWNORMAL);
 }
 
 static void updateFinished(UpdateResult* r) {
@@ -2588,6 +2623,7 @@ static LRESULT CALLBACK stProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_TOGGLEDONE:
         g_toggleBusy.clear();
+        g_disabledStamp = 0;
         g_stAds = getAdapters(true);
         InvalidateRect(h, nullptr, FALSE);
         if (!wp)
@@ -2770,7 +2806,7 @@ static void edFill(HWND d, const Profile* p) {
     if (p && !p->ips.empty()) {
         ipSet(d, IDC_IP, &p->ips[0].addr);
         ULONG m = 0;
-        ConvertLengthToIpv4Mask(p->ips[0].prefix, &m);
+        m = prefixToMask(p->ips[0].prefix);
         IN_ADDR ma;
         ma.s_addr = m;
         ipSet(d, IDC_MASK, &ma);
@@ -2826,7 +2862,7 @@ static bool edCommit(HWND d) {
         IN_ADDR m;
         if (ipGet(d, IDC_IP, first.addr) != 1) return edFail(d, IDC_IP, TR(L"Bitte eine vollständige IP-Adresse eingeben.", L"Please enter a complete IP address."));
         UINT8 len = 0;
-        if (ipGet(d, IDC_MASK, m) != 1 || ConvertIpv4MaskToLength(m.s_addr, &len) != NO_ERROR || len == 0)
+        if (ipGet(d, IDC_MASK, m) != 1 || !maskToPrefix(m.s_addr, len) || len == 0)
             return edFail(d, IDC_MASK, TR(L"Die Subnetzmaske ist ungültig.", L"The subnet mask is invalid."));
         first.prefix = len;
         p.ips.push_back(first);
@@ -2948,7 +2984,7 @@ static void profileFromAdapter(const Adapter& a, Profile& p) {
                 IN_ADDR m;
                 UINT8 len;
                 if (parseIp(ips[i], w.addr) && parseIp(masks[i], m) && w.addr.s_addr &&
-                    ConvertIpv4MaskToLength(m.s_addr, &len) == NO_ERROR) {
+                    maskToPrefix(m.s_addr, len)) {
                     w.prefix = len;
                     p.ips.push_back(w);
                 }
@@ -3124,7 +3160,7 @@ static void edDrawList(HWND d, DRAWITEMSTRUCT* di) {
         if (p->autoOn) mode += L" · Auto";
         drawText(dc, mode, dr, C::Accent, g_eSmall, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         dr.left += textWidth(dc, mode, g_eSmall);
-        drawText(dc, L" · " + p->adapter, dr, C::Sub, g_eSmall, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        drawText(dc, p->adapter.empty() ? wstring() : L" · " + p->adapter, dr, C::Sub, g_eSmall, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     }
 }
 
@@ -3601,9 +3637,14 @@ static INT_PTR CALLBACK edProc(HWND d, UINT msg, WPARAM wp, LPARAM lp) {
             edRefreshList(d);
             edSelect(d, g_edSel);
             edSetDirty(d, true);
-            edFeedback(d, FB_INFO, id == IDC_DUP ? TR(L"Kopie angelegt – anpassen und „Speichern“ klicken.", L"Copy created – adjust and click “Save”.")
-                                                 : TR(L"Neues Profil mit den aktuellen Werten von „", L"New profile with the current values of “") + p.adapter +
-                                                       TR(L"“ angelegt – anpassen und „Speichern“ klicken.", L"” created – adjust and click “Save”."));
+            if (id == IDC_DUP)
+                edFeedback(d, FB_INFO, TR(L"Kopie angelegt – anpassen und „Speichern“ klicken.", L"Copy created – adjust and click “Save”."));
+            else if (p.adapter.empty())
+                edFeedback(d, FB_INFO, TR(L"Neues Profil angelegt – Adapter wählen und „Speichern“ klicken.",
+                                          L"New profile created – choose an adapter and click “Save”."));
+            else
+                edFeedback(d, FB_INFO, TR(L"Neues Profil mit den aktuellen Werten von „", L"New profile with the current values of “") +
+                                           p.adapter + TR(L"“ angelegt – anpassen und „Speichern“ klicken.", L"” created – adjust and click “Save”."));
             SetFocus(GetDlgItem(d, IDC_NAME));
             SendDlgItemMessageW(d, IDC_NAME, EM_SETSEL, 0, -1);
             break;
@@ -3753,8 +3794,26 @@ static void openEditor() {
     }
 }
 
+static bool exeInProtectedFolder() {
+    wstring exe = lower(g_exePath);
+    for (const KNOWNFOLDERID* id : {&FOLDERID_ProgramFiles, &FOLDERID_ProgramFilesX86, &FOLDERID_Windows}) {
+        PWSTR dir = nullptr;
+        if (SUCCEEDED(SHGetKnownFolderPath(*id, 0, nullptr, &dir))) {
+            wstring base = lower(wstring(dir) + L"\\");
+            CoTaskMemFree(dir);
+            if (exe.compare(0, base.size(), base) == 0) return true;
+        }
+    }
+    return false;
+}
+
 static bool setAutostart(bool on, HWND owner) {
     wstring err;
+    if (on && !exeInProtectedFolder()) {
+        wstring dir = g_exePath.substr(0, g_exePath.find_last_of(L'\\'));
+        wstring msg = fmt(TR(L"MilleIpSwitch liegt in einem Ordner, den auch Programme ohne Adminrechte verändern können:\n%ls\n\nDer Autostart läuft mit Adminrechten. Ein anderes Programm könnte die EXE austauschen und so Adminrechte erlangen. Sicherer ist es, die EXE nach „C:\\Program Files\\MilleIpSwitch“ zu verschieben und den Autostart dort einzuschalten.\n\nAutostart trotzdem hier einrichten?", L"MilleIpSwitch is located in a folder that programs without administrator rights can modify:\n%ls\n\nAutostart runs with administrator rights. Another program could replace the exe and gain administrator rights that way. It is safer to move the exe to “C:\\Program Files\\MilleIpSwitch” and enable autostart there.\n\nEnable autostart here anyway?"), dir.c_str());
+        if (MessageBoxW(owner, msg.c_str(), L"MilleIpSwitch", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) return false;
+    }
     if (on) {
         if (!taskInstall(err)) {
             MessageBoxW(owner, (TR(L"Autostart konnte nicht eingerichtet werden.\n", L"Autostart could not be set up.\n") + err).c_str(), L"MilleIpSwitch", MB_ICONERROR);
@@ -4771,6 +4830,103 @@ static void report(const wstring& text, bool err) {
         MessageBoxW(nullptr, text.c_str(), L"MilleIpSwitch", MB_ICONERROR);
 }
 
+static int runSelfTest() {
+    vector<wstring> fails;
+    auto check = [&](bool cond, const wchar_t* what) {
+        if (!cond) fails.push_back(what);
+    };
+    wstring err;
+    Ip4 a4;
+    check(parseCidr(L"192.168.1.10/24", a4, err) && a4.prefix == 24 && ipStr(a4.addr) == L"192.168.1.10", L"parseCidr prefix");
+    check(parseCidr(L"10.0.0.5/255.0.0.0", a4, err) && a4.prefix == 8, L"parseCidr mask");
+    check(!parseCidr(L"10.0.0.5", a4, err), L"parseCidr missing prefix");
+    check(!parseCidr(L"300.1.1.1/24", a4, err), L"parseCidr invalid ip");
+    Ip6 a6;
+    check(parseCidr6(L"2001:db8::10/64", a6, err) && a6.prefix == 64 && ip6Str(a6.addr) == L"2001:db8::10", L"parseCidr6");
+    check(parseCidr6(L"fe80::1", a6, err) && a6.prefix == 64, L"parseCidr6 default prefix");
+    check(!parseCidr6(L"2001:db8::zz/64", a6, err), L"parseCidr6 invalid");
+    check(normMac(L"aa:bb:cc:dd:ee:ff") == L"AA-BB-CC-DD-EE-FF", L"normMac colon");
+    check(normMac(L"AABBCCDDEEFF") == L"AA-BB-CC-DD-EE-FF", L"normMac plain");
+    check(normMac(L"aa-bb").empty(), L"normMac invalid");
+    check(splitList(L" a, b ;c ,, ").size() == 3, L"splitList");
+    check(trim(L"  x \r\n") == L"x", L"trim");
+    int v[3];
+    parseVersion(L"v1.12.3", v);
+    check(v[0] == 1 && v[1] == 12 && v[2] == 3, L"parseVersion");
+    check(isNewerVersion(L"v99.0.0") && !isNewerVersion(L"v0.0.1") && !isNewerVersion(wstring(L"v") + NS_VERSION), L"isNewerVersion");
+
+    vector<Profile> ps(2);
+    ps[0].name = L"Lab \u00dcn\u00efcode";
+    ps[0].adapter = L"Ethernet 2";
+    parseCidr(L"192.168.10.50/24", a4, err);
+    ps[0].ips.push_back(a4);
+    parseCidr(L"10.0.0.5/8", a4, err);
+    ps[0].ips.push_back(a4);
+    ps[0].hasGw = parseIp(L"192.168.10.1", ps[0].gw);
+    IN_ADDR d4{};
+    parseIp(L"1.1.1.1", d4);
+    ps[0].dns.push_back(d4);
+    ps[0].ip6mode = 2;
+    parseCidr6(L"2001:db8:10::50/64", a6, err);
+    ps[0].ips6.push_back(a6);
+    ps[0].hasGw6 = parseIp6(L"2001:db8:10::1", ps[0].gw6);
+    IN6_ADDR d6{};
+    parseIp6(L"2001:4860:4860::8888", d6);
+    ps[0].dns6.push_back(d6);
+    ps[0].autoOn = true;
+    ps[0].autoMac = L"AA-BB-CC-DD-EE-FF";
+    ps[0].autoPing = L"192.168.10.1";
+    ps[0].autoArpIp = L"192.168.10.15";
+    ps[0].autoArpMac = L"11-22-33-44-55-66";
+    ps[1].name = L"Office";
+    ps[1].adapter = L"Wi-Fi";
+    ps[1].dhcp = true;
+    ps[1].ip6mode = 1;
+
+    wchar_t tmp[MAX_PATH];
+    GetTempPathW(MAX_PATH, tmp);
+    wstring file = wstring(tmp) + L"milleipswitch-selftest.ini";
+    vector<Profile> in;
+    bool io = writeProfilesTo(file, ps, err) && loadProfilesFrom(file, in, err);
+    check(io, L"write/load profiles");
+    if (io && in.size() == 2) {
+        const Profile& q = in[0];
+        check(q.name == ps[0].name && q.adapter == ps[0].adapter && !q.dhcp, L"round trip basics");
+        check(q.ips.size() == 2 && q.ips[1].prefix == 8 && q.hasGw && ipStr(q.gw) == L"192.168.10.1" && q.dns.size() == 1, L"round trip ipv4");
+        check(q.ip6mode == 2 && q.ips6.size() == 1 && q.ips6[0].prefix == 64 && q.hasGw6 && q.dns6.size() == 1, L"round trip ipv6");
+        check(q.autoOn && q.autoMac == ps[0].autoMac && q.autoPing == ps[0].autoPing && q.autoArpIp == ps[0].autoArpIp &&
+                  q.autoArpMac == ps[0].autoArpMac,
+              L"round trip autoswitch");
+        check(in[1].dhcp && in[1].ip6mode == 1 && in[1].ips.empty() && !in[1].autoOn, L"round trip dhcp profile");
+    } else if (io) {
+        check(false, L"round trip count");
+    }
+    {
+        const char bad[] = "[Bad]\r\nadapter = X\r\ndhcp = no\r\n";
+        HANDLE f = CreateFileW(file.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
+        if (f != INVALID_HANDLE_VALUE) {
+            DWORD wr = 0;
+            WriteFile(f, bad, sizeof(bad) - 1, &wr, nullptr);
+            CloseHandle(f);
+            check(!loadProfilesFrom(file, in, err), L"reject static profile without ip");
+        }
+    }
+    DeleteFileW(file.c_str());
+
+    wstring rep = fails.empty() ? L"selftest: OK\n" : L"selftest: FAILED\n";
+    for (auto& f : fails) rep += L"  - " + f + L"\n";
+    out(rep);
+    string utf8(WideCharToMultiByte(CP_UTF8, 0, rep.c_str(), (int)rep.size(), nullptr, 0, nullptr, nullptr), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, rep.c_str(), (int)rep.size(), &utf8[0], (int)utf8.size(), nullptr, nullptr);
+    HANDLE lf = CreateFileW((wstring(tmp) + L"milleipswitch-selftest.log").c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
+    if (lf != INVALID_HANDLE_VALUE) {
+        DWORD wr = 0;
+        WriteFile(lf, utf8.data(), (DWORD)utf8.size(), &wr, nullptr);
+        CloseHandle(lf);
+    }
+    return fails.empty() ? 0 : 1;
+}
+
 static int runCli(const wstring& arg) {
     wstring a = lower(arg);
     if (a == L"--help" || a == L"-h" || a == L"/?") {
@@ -4794,6 +4950,7 @@ static int runCli(const wstring& arg) {
             TR(L"Profile: ", L"Profiles: ") + g_iniPath + L"\n");
         return RC_OK;
     }
+    if (a == L"--selftest") return runSelfTest();
     if (a == L"--version" || a == L"-v") {
         out(wstring(L"MilleIpSwitch ") + NS_VERSION + L"\n");
         return RC_OK;

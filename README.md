@@ -88,8 +88,6 @@ Changing IP settings requires administrator rights. If the tray instance is runn
 
 ## AutoSwitch
 
-<img src="docs/screenshot-autoswitch.png" width="420" alt="AutoSwitch dialog">
-
 In the profile manager open **AutoSwitch …** for a profile and tick *Activate this profile automatically*. The profile is activated as soon as its adapter is connected and all checked conditions are met:
 
 - the gateway has a given **MAC address** (*Use current* reads it from the connected network)

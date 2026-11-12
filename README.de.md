@@ -57,8 +57,6 @@ scoop install https://github.com/666mille/MilleIpSwitch/releases/latest/download
 
 ## AutoSwitch
 
-<img src="docs/screenshot-autoswitch.png" width="420" alt="AutoSwitch dialog">
-
 Öffne in der Profilverwaltung bei einem Profil **AutoSwitch …** und hake *Dieses Profil automatisch aktivieren* an. Das Profil wird aktiviert, sobald sein Adapter verbunden ist und alle angehakten Bedingungen zutreffen:
 
 - das Gateway hat eine bestimmte **MAC-Adresse** (*Aktuelle übernehmen* liest sie aus dem verbundenen Netz)

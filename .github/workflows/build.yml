@@ -21,6 +21,13 @@ jobs:
           cmake -S . -B build -A x64
           cmake --build build --config Release
 
+      - name: Self-test
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath build/Release/milleipswitch.exe -ArgumentList '--selftest' -Wait -PassThru
+          Get-Content "$env:TEMP\milleipswitch-selftest.log"
+          if ($p.ExitCode -ne 0) { exit 1 }
+
       - name: Checksum and package manifests
         if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
